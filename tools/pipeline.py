@@ -16,6 +16,7 @@ WINDOWS = os.name == "nt"
 EXE = ".exe" if WINDOWS else ""
 MUTATOR = ROOT / "recoil" / "barrewind.sdd"
 WIDGET = ROOT / "lua" / "dump_replay.lua"
+WIDGET_ECO = ROOT / "lua" / "dump_replay_eco.lua"  # every team's resources once a second -> <name>.eco.bin
 
 
 # settings ----------------------------------------------------------------------------------------
@@ -131,6 +132,10 @@ def curves_path(cfg, demo):
     return Path(cfg["out_dir"], "curves", Path(demo).stem + ".curves")
 
 
+def eco_path(cfg, demo):
+    return Path(cfg["out_dir"], "curves", Path(demo).stem + ".eco.bin")
+
+
 def parse(cfg, demo):
     """Generator: yields ("proc", Popen) once (kill it to cancel), then ("progress", pct, text).
     Leaves <out>/curves/<name>.curves; raises RuntimeError with the log path on failure."""
@@ -148,7 +153,9 @@ def parse(cfg, demo):
     widget = bar / "LuaUI" / "Widgets" / WIDGET.name
     widget.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(WIDGET, widget)
-    for f in ("bardump.jsonl", "bardump.bin"):
+    widget_eco = widget.with_name(WIDGET_ECO.name)
+    shutil.copy(WIDGET_ECO, widget_eco)
+    for f in ("bardump.jsonl", "bardump.bin", "bardump_eco.bin"):
         (bar / f).unlink(missing_ok=True)
     # the widget stops at the replay's last frame (an unfinished replay never reaches GameOver)
     (bar / "bardump.request").write_text(f"dump {total}\n")
@@ -186,9 +193,12 @@ def parse(cfg, demo):
         if r.returncode != 0:
             curves.unlink(missing_ok=True)
             raise RuntimeError(f"bake failed, see {log}")
+        if (bar / "bardump_eco.bin").exists():
+            shutil.move(bar / "bardump_eco.bin", eco_path(cfg, demo))
     finally:
         (bar / "bardump.request").unlink(missing_ok=True)
         widget.unlink(missing_ok=True)
+        widget_eco.unlink(missing_ok=True)
     yield "progress", 100, "parsed"
 
 
@@ -271,6 +281,10 @@ def play(cfg, demo, shot=None):
     r = subprocess.run([str(bake_exe()), "export-lua", str(curves), str(game / "replay")], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("export failed: " + r.stdout + r.stderr)
+    # the economy recording, if the replay was parsed with it; without it the top bar shows what the replayed
+    # units produce, which is not the match's economy
+    if eco_path(cfg, demo).exists():
+        shutil.copy(eco_path(cfg, demo), game / "replay" / "eco.bin")
     # the replay's own start script gives the game version and options it ran with
     replay_script = demo_script(demo)
     gametype = script_field(replay_script, "gametype")

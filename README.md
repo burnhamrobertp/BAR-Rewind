@@ -74,6 +74,7 @@ within 0.5 [elmo](#whats-recorded "Recoil distance unit: one map grid square is 
 - **Aim pieces:** each weapon's barrel and everything it hangs from (torso, turret, arms), so a turret
   points the right way the moment you jump to any time
 - **Projectiles**, **features** (wrecks, trees), **terrain changes** and **build queues**
+- **Economy**: every team's metal and energy level, storage, income, expense and pull, once a second. The player feeds them back through the engine's own resource counters, so BAR's top bar, player list and eco stats show the match's economy at the replay time (replays parsed before this show what the replayed units produce instead).
 
 BAR animates the rest itself, from the recorded movement: walk cycles, idle motion, deaths and explosions.
 
