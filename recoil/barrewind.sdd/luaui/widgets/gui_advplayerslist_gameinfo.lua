@@ -200,7 +200,7 @@ function widget:DrawScreen()
 
 	for _, name in ipairs(order) do
 		local b = buttons[name]
-		local active = playing and ((name == "back" and speed < 0) or (name == "forward" and speed > 0))
+		local active = playing and mathAbs(speed) > 1 and ((name == "back" and speed < 0) or (name == "forward" and speed > 0))
 		if active or inRect(mx, my, b) then
 			RectRound(b[1], b[2], b[3], b[4], (b[4] - b[2]) * 0.2, 1, 1, 1, 1, { 1, 1, 1, active and 0.18 or 0.1 })
 		end
