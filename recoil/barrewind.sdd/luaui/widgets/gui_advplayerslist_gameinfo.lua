@@ -73,6 +73,19 @@ local function layout()
 	textX = x + padding * 2
 	local rowBottom = bottom + padding
 	slider = { left + padding * 4, rowBottom + size * 0.3, right - padding * 4, rowBottom + size * 0.7 }
+	if WG.tooltip then
+		WG.tooltip.AddTooltip("replay_back", buttons.back, "2x backwards, again to double\n\255\200\200\200R\255\255\255\255  reverse direction\n\255\200\200\200Left\255\255\255\255  skip back 10 s", nil, "Rewind")
+		WG.tooltip.AddTooltip("replay_playpause", buttons.playpause, "Play is 1x forward\n\255\200\200\200Space\255\255\255\255  play / pause\n\255\200\200\200Up / Down\255\255\255\255  double / halve speed", nil, "Play / Pause")
+		WG.tooltip.AddTooltip("replay_forward", buttons.forward, "2x forwards, again to double\n\255\200\200\200Right\255\255\255\255  skip ahead 10 s", nil, "Fast forward")
+		WG.tooltip.AddTooltip("replay_timeline", { slider[1], bottom, slider[3], slider[4] + size * 0.3 }, "Drag to seek", nil, "Timeline")
+	end
+end
+
+local function removeTooltips()
+	if not WG.tooltip then return end
+	for _, name in ipairs({ "replay_back", "replay_playpause", "replay_forward", "replay_timeline" }) do
+		WG.tooltip.RemoveTooltip(name)
+	end
 end
 
 local function refreshGuishader()
@@ -131,6 +144,7 @@ function widget:Initialize()
 end
 
 function widget:Shutdown()
+	removeTooltips()
 	if WG.guishader then WG.guishader.RemoveDlist("displayinfo") end
 	if guishaderList then gl.DeleteList(guishaderList) end
 	Spring.SendCommands("fps 1")
