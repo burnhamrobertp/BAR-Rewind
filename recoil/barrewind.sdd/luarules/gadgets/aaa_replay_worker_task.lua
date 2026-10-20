@@ -14,6 +14,11 @@ end
 -- file loads, so they are swapped here, in a file that loads first (gadgets load in file order).
 if gadgetHandler:IsSyncedCode() then return end
 
+-- Engines from 2026.08 draw nano spray themselves, only for units that really build, and BAR's
+-- gadget stands down when this flag says so: replay builders need the gadget, which reads the
+-- overrides below
+if Engine.FeatureSupport then Engine.FeatureSupport.nanoParticlesGL4 = false end
+
 local GetUnitRulesParam = Spring.GetUnitRulesParam
 local workerTask, buildPower = Spring.GetUnitWorkerTask, Spring.GetUnitCurrentBuildPower
 

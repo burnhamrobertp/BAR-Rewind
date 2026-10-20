@@ -472,7 +472,9 @@ def play(cfg, demo, shot=None):
             ("bench", "SHOT_BENCH", bool), ("speed", "SHOT_SPEED", float)) if os.environ.get(env))
         (game / "replay" / "shot.lua").write_text(f"return {{ frame = {cam['frame']}, state = {lua_value(cam['state'])}{extra} }}\n")
     log = open(out_dir / "play.log", "w")
-    return subprocess.Popen([str(engine_dir(bar) / ("spring" + EXE)), "--write-dir", str(bar), "--isolation",
+    # the replay's own engine, as the parse uses: newer engines draw nano spray natively, only for units that
+    # really build, so BAR's Lua nano gadget (which the player feeds) stands down and no spray shows
+    return subprocess.Popen([str(engine_dir(bar, demo_engine(demo)) / ("spring" + EXE)), "--write-dir", str(bar), "--isolation",
                              "--window", str(play_script)], stdout=log, stderr=subprocess.STDOUT, **new_group())
 
 
