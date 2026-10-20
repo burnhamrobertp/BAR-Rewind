@@ -103,7 +103,8 @@ pub const QueueItem = extern struct {
 };
 
 pub const Section = enum(u32) { meta, units, transforms, statuses, tracks, features, projectiles, projectile_keys, pose_keys, targets, terrain, queues, queue_items };
-pub const section_count = @typeInfo(Section).@"enum".fields.len;
+pub const section_names = @typeInfo(Section).@"enum".field_names;
+pub const section_count = section_names.len;
 
 pub fn SectionType(comptime s: Section) type {
     return switch (s) {
@@ -156,13 +157,13 @@ pub const File = struct {
         if (!std.mem.eql(u8, &header.magic, &magic) or header.version != version) return error.BadCurves;
         var file: File = undefined;
         file.header = header;
-        inline for (@typeInfo(Section).@"enum".fields) |field| {
-            const T = SectionType(@enumFromInt(field.value));
-            const offset = header.offsets[field.value];
-            const count = header.counts[field.value];
+        inline for (section_names, 0..) |name, i| {
+            const T = SectionType(@enumFromInt(i));
+            const offset = header.offsets[i];
+            const count = header.counts[i];
             if (offset + count * @sizeOf(T) > bytes.len) return error.BadCurves;
             const ptr: [*]const T = @ptrCast(@alignCast(bytes.ptr + offset));
-            @field(file, field.name) = ptr[0..count];
+            @field(file, name) = ptr[0..count];
         }
         return file;
     }

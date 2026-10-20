@@ -610,24 +610,24 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     var lua: std.Io.Writer.Allocating = .init(gpa);
     const w = &lua.writer;
     try w.print("return {{\n  first_frame = {d},\n  last_frame = {d},\n  exact_poses = {},\n  sections = {{\n", .{ file.header.first_frame, file.header.last_frame, file.pose_keys.len > 0 });
-    inline for (@typeInfo(curves.Section).@"enum".fields) |field| {
+    inline for (curves.section_names, 0..) |name, s| {
         // the Recoil player needs poses, not the model-space matrices the Vulkan viewer uses;
         // per-unit key curves go out in time windows below
-        if (comptime isAny(field.name, &.{ "meta", "transforms", "statuses", "pose_keys", "targets" })) continue;
-        const T = curves.SectionType(@enumFromInt(field.value));
-        const items = @field(file, field.name);
+        if (comptime isAny(name, &.{ "meta", "transforms", "statuses", "pose_keys", "targets" })) continue;
+        const T = curves.SectionType(@enumFromInt(s));
+        const items = @field(file, name);
         const per_chunk = chunk_bytes / @sizeOf(T);
         var chunks: usize = 0;
         var i: usize = 0;
         while (i < items.len or (i == 0 and chunks == 0)) : (i += per_chunk) {
             const end = @min(i + per_chunk, items.len);
             var name_buffer: [64]u8 = undefined;
-            const name = try std.fmt.bufPrint(&name_buffer, "{s}_{d}.bin", .{ field.name, chunks });
-            try writeZlib(io, gpa, dir, name, std.mem.sliceAsBytes(items[i..end]));
+            const chunk_name = try std.fmt.bufPrint(&name_buffer, "{s}_{d}.bin", .{ name, chunks });
+            try writeZlib(io, gpa, dir, chunk_name, std.mem.sliceAsBytes(items[i..end]));
             chunks += 1;
             if (items.len == 0) break;
         }
-        try w.print("    {s} = {{ size = {d}, count = {d}, per_chunk = {d}, chunks = {d} }},\n", .{ field.name, @sizeOf(T), items.len, per_chunk, chunks });
+        try w.print("    {s} = {{ size = {d}, count = {d}, per_chunk = {d}, chunks = {d} }},\n", .{ name, @sizeOf(T), items.len, per_chunk, chunks });
     }
     try w.writeAll("  },\n");
 

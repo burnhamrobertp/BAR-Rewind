@@ -44,13 +44,13 @@ Map previews of `.sd7` maps need [7-Zip](https://www.7-zip.org/) (`7z` on Linux)
 
 ## Build from source (custom install)
 
-Needs [Zig](https://ziglang.org/) 0.16 (0.17 dropped the `--` arguments `zig build run` passes on) and Python 3.
+Needs [Zig](https://ziglang.org/) 0.17 and Python 3.
 
 ```sh
-zig build run                    # the app
-zig build run -- <replay.sdfz>   # parse (once, cached) and play one replay
+zig build run                        # the app
+zig build run -Ddemo=<replay.sdfz>   # parse (once, cached) and play one replay
 zig build test
-zig build dist                   # dist/bar-rewind-linux.tar.gz and dist/bar-rewind-windows.zip
+zig build dist                       # dist/bar-rewind-linux.tar.gz and dist/bar-rewind-windows.zip
 ```
 
 - `lua/dump_replay.lua`: the BAR widget that records a replay while the headless engine re-simulates it

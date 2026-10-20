@@ -1,10 +1,5 @@
 const std = @import("std");
 
-// 0.17 dropped Build.args (the words after `--`) with nothing a build.zig can read instead
-comptime {
-    if (!@hasField(std.Build, "args")) @compileError("BAR-Rewind builds with Zig 0.16: this Zig has no Build.args");
-}
-
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{ .default_target = .{ .abi = .gnu } });
     const optimize = b.standardOptimizeOption(.{});
@@ -21,20 +16,25 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(bake);
     const run_bake = b.addRunArtifact(bake);
-    if (b.args) |args| run_bake.addArgs(args);
-    b.step("bake", "Bake a dump: zig build bake -- <in.jsonl> <out.curves>").dependOn(&run_bake.step);
+    if (b.option([]const u8, "in", "bake: the dump to read (<name>.jsonl, with <name>.bin beside it)")) |in| run_bake.addArg(in);
+    if (b.option([]const u8, "out", "bake: the .curves to write")) |out| run_bake.addArg(out);
+    b.step("bake", "Bake a dump: zig build bake -Din=<dump.jsonl> -Dout=<out.curves>").dependOn(&run_bake.step);
 
     // run: the app, or one replay straight to playback ------------------------------------------
     const python = if (b.graph.host.result.os.tag == .windows) "python" else "python3";
-    const run_app = if (b.args == null)
-        b.addSystemCommand(&.{ python, b.pathFromRoot("tools/ui.py") })
-    else
-        b.addSystemCommand(&.{ python, b.pathFromRoot("tools/pipeline.py"), "replay" });
+    const demo = b.option([]const u8, "demo", "run: play this replay instead of opening the app");
+    const run_app = b.addSystemCommand(&.{python});
+    if (demo) |path| {
+        run_app.addFileArg(b.path("tools/pipeline.py"));
+        run_app.addArgs(&.{ "replay", path });
+    } else {
+        run_app.addFileArg(b.path("tools/ui.py"));
+    }
     run_app.step.dependOn(&b.addInstallArtifact(bake, .{}).step);
-    if (b.args) |args| run_app.addArgs(args);
-    b.step("run", "Open the app, or play one replay: zig build run -- <demo.sdfz> (parsed once, cached)").dependOn(&run_app.step);
+    b.step("run", "Open the app, or play one replay: zig build run -Ddemo=<demo.sdfz> (parsed once, cached)").dependOn(&run_app.step);
 
-    const run_dist = b.addSystemCommand(&.{ python, b.pathFromRoot("tools/dist.py") });
+    const run_dist = b.addSystemCommand(&.{python});
+    run_dist.addFileArg(b.path("tools/dist.py"));
     b.step("dist", "Pack dist/bar-rewind-linux.tar.gz and dist/bar-rewind-windows.zip").dependOn(&run_dist.step);
 
     // tests -----------------------------------------------------------------------------------
