@@ -161,10 +161,13 @@ def parse(cfg, demo):
     widget = bar / "LuaUI" / "Widgets" / WIDGET.name
     widget.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(WIDGET, widget)
+    # LuaUI/Config is the one folder BAR lets a user widget both read and write (bar-game #9547)
+    dump = bar / "LuaUI" / "Config"
+    dump.mkdir(parents=True, exist_ok=True)
     for f in ("bardump.jsonl", "bardump.bin"):
-        (bar / f).unlink(missing_ok=True)
+        (dump / f).unlink(missing_ok=True)
     # the widget stops at the replay's last frame (an unfinished replay never reaches GameOver)
-    (bar / "bardump.request").write_text(f"dump {total}\n")
+    (dump / "bardump.request").write_text(f"dump {total}\n")
     engine = engine_dir(bar, demo_engine(demo))
     headless = engine / ("spring-headless" + EXE)
     exe = headless if headless.exists() else engine / ("spring" + EXE)
@@ -185,12 +188,12 @@ def parse(cfg, demo):
                 if pct > shown:
                     shown = pct
                     yield "progress", pct, f"parsing {pct}%"
-        if proc.returncode < 0 or not (bar / "bardump.jsonl").exists():
+        if proc.returncode < 0 or not (dump / "bardump.jsonl").exists():
             raise RuntimeError(f"parse failed (engine exit {proc.returncode}), see {log}")
         yield "progress", 100, "baking"
         tmp = curves.with_suffix(".jsonl")
-        shutil.move(bar / "bardump.jsonl", tmp)
-        shutil.move(bar / "bardump.bin", tmp.with_suffix(".bin"))
+        shutil.move(dump / "bardump.jsonl", tmp)
+        shutil.move(dump / "bardump.bin", tmp.with_suffix(".bin"))
         r = subprocess.run([str(bake_exe()), str(tmp), str(curves)], capture_output=True, text=True)
         with open(log, "a") as out:
             out.write(r.stdout + r.stderr)
@@ -200,7 +203,7 @@ def parse(cfg, demo):
             curves.unlink(missing_ok=True)
             raise RuntimeError(f"bake failed, see {log}")
     finally:
-        (bar / "bardump.request").unlink(missing_ok=True)
+        (dump / "bardump.request").unlink(missing_ok=True)
         widget.unlink(missing_ok=True)
     yield "progress", 100, "parsed"
 

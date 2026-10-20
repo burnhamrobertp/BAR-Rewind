@@ -15,7 +15,9 @@ end
 
 local SAMPLE_EVERY = 3 -- sim is 30 Hz, so 10 Hz
 local HEIGHT_STEP = 64
-local REQUEST = "bardump.request"
+-- BAR confines user widgets to reading LuaUI/ and writing LuaUI/Config/ (bar-game #9547)
+local DIR = "LuaUI/Config/"
+local REQUEST = DIR .. "bardump.request"
 
 local format, concat, abs = string.format, table.concat, math.abs
 local S = Spring
@@ -429,7 +431,7 @@ local function readRequest()
 	local frame, x, z = line:match("^shot (%d+) ([%d%.]+) ([%d%.]+)")
 	if frame then return { shot = tonumber(frame), x = tonumber(x), z = tonumber(z) } end
 	-- io.open is sandboxed to the write dir; pipeline.py moves the files out
-	return { path = "bardump.jsonl", last = tonumber(line:match("(%d+)$")) }
+	return { path = DIR .. "bardump.jsonl", last = tonumber(line:match("(%d+)$")) }
 end
 
 -- reference screenshot mode ---------------------------------------------------------------------
@@ -439,7 +441,7 @@ local shot = nil -- { frame, x, z, state = nil | "aimed" | draw frames counted }
 local function shotFrame(frame)
 	if frame < shot.shot or shot.state then return end
 	S.SendCommands("pause 1", "hideinterface 1")
-	local ok, state = pcall(VFS.Include, "barshot_camera_in.lua", nil, VFS.RAW)
+	local ok, state = pcall(VFS.Include, DIR .. "barshot_camera_in.lua", nil, VFS.RAW)
 	if ok and type(state) == "table" then
 		S.SetCameraState(state, 0)
 	else
@@ -459,7 +461,7 @@ function widget:Update()
 		local dx, dy, dz = S.GetCameraDirection()
 		local vfov = S.GetCameraFOV()
 		local vx, vy = S.GetViewGeometry()
-		local f = io.open("barshot_camera.json", "w")
+		local f = io.open(DIR .. "barshot_camera.json", "w")
 		f:write(format('{"frame":%d,"pos":[%f,%f,%f],"dir":[%f,%f,%f],"vfov":%f,"size":[%d,%d],"state":%s}\n',
 			S.GetGameFrame(), px, py, pz, dx, dy, dz, vfov, vx, vy, json(S.GetCameraState())))
 		f:close()
@@ -513,7 +515,7 @@ function widget:GameFrame(frame)
 	if not file and path then
 		-- binary mode: text mode writes \r\n on Windows
 		file = io.open(path, "wb")
-		bin = io.open("bardump.bin", "wb")
+		bin = io.open(DIR .. "bardump.bin", "wb")
 		-- file header: magic, format version, floats per unit row
 		if bin then bin:write("BRDB", VFS.PackU32(3, UNIT_ROW)) end
 		if not file or not bin then
