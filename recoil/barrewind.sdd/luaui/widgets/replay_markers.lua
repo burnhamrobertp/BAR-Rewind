@@ -18,7 +18,7 @@ local marks = M.markers or {}
 local GetParam, GetGroundHeight = Spring.GetGameRulesParam, Spring.GetGroundHeight
 local WorldToScreen = Spring.WorldToScreenCoords
 local ERASE_RADIUS2 = 100 * 100
-local POLE, FONT = 60, 14
+local PIN, FONT = 28, 22
 
 local live = {}
 local cursor = 1
@@ -30,19 +30,19 @@ for _, m in ipairs(marks) do
 	m.text = m.label ~= "" and (m.name .. ": " .. m.label) or m.name
 end
 
-local function near(x, z, m)
-	local dx, dz = x - m.x, z - m.z
-	if dx * dx + dz * dz <= ERASE_RADIUS2 then return true end
-	if m.type ~= "line" then return false end
-	dx, dz = x - m.x2, z - m.z2
+-- the engine's rule: an erase takes marks within its radius whose author matches the eraser's side,
+-- spectator or player, and a line counts by its first point
+local function erased(e, m)
+	if m.spec ~= e.spec then return false end
+	local dx, dz = e.x - m.x, e.z - m.z
 
-	return dx * dx + dz * dz <= ERASE_RADIUS2
+	return dx * dx + dz * dz < ERASE_RADIUS2
 end
 
 local function apply(m)
 	if m.type == "erase" then
 		for i = #live, 1, -1 do
-			if near(m.x, m.z, live[i]) then table.remove(live, i) end
+			if erased(m, live[i]) then table.remove(live, i) end
 		end
 	else
 		live[#live + 1] = m
@@ -69,14 +69,10 @@ end
 
 local function drawLines()
 	for _, m in ipairs(live) do
-		gl.Color(m.colour[1], m.colour[2], m.colour[3], 0.9)
 		if m.type == "line" then
+			gl.Color(m.colour[1], m.colour[2], m.colour[3], 0.9)
 			gl.Vertex(m.x, GetGroundHeight(m.x, m.z) + 2, m.z)
 			gl.Vertex(m.x2, GetGroundHeight(m.x2, m.z2) + 2, m.z2)
-		else
-			local y = GetGroundHeight(m.x, m.z)
-			gl.Vertex(m.x, y, m.z)
-			gl.Vertex(m.x, y + POLE, m.z)
 		end
 	end
 end
@@ -89,7 +85,7 @@ function widget:DrawWorld()
 	for _, m in ipairs(live) do
 		if m.type == "point" then
 			gl.Color(m.colour[1], m.colour[2], m.colour[3], 0.9)
-			gl.DrawGroundCircle(m.x, GetGroundHeight(m.x, m.z), m.z, 14, 16)
+			gl.DrawGroundCircle(m.x, GetGroundHeight(m.x, m.z), m.z, 40, 24)
 		end
 	end
 	gl.LineWidth(1)
@@ -97,13 +93,24 @@ function widget:DrawWorld()
 	gl.Color(1, 1, 1, 1)
 end
 
+-- a pin of constant screen size over the point, as the engine's own marker is
+local function drawPin(sx, sy)
+	gl.Vertex(sx, sy)
+	gl.Vertex(sx - PIN * 0.5, sy + PIN)
+	gl.Vertex(sx + PIN * 0.5, sy + PIN)
+end
+
 function widget:DrawScreen()
 	for _, m in ipairs(live) do
 		if m.type == "point" then
-			local sx, sy, sz = WorldToScreen(m.x, GetGroundHeight(m.x, m.z) + POLE, m.z)
-			if sz and sz < 1 then
-				gl.Color(m.colour[1], m.colour[2], m.colour[3], 1)
-				gl.Text(m.text, sx, sy + 4, FONT, "oc")
+			local sx, sy, sz = WorldToScreen(m.x, GetGroundHeight(m.x, m.z), m.z)
+			if sz and sz >= 0 and sz <= 1 then
+				gl.Color(m.colour[1], m.colour[2], m.colour[3], 0.95)
+				gl.BeginEnd(GL.TRIANGLES, drawPin, sx, sy)
+				gl.Color(0, 0, 0, 0.6)
+				gl.Rect(sx - 2, sy + PIN, sx + 2, sy + PIN + FONT * 0.4)
+				gl.Color(1, 1, 1, 1)
+				gl.Text(m.text, sx, sy + PIN + FONT * 0.5, FONT, "oc")
 			end
 		end
 	end
