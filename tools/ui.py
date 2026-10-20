@@ -27,15 +27,18 @@ cancelled = False
 
 def replays():
     demos = sorted(Path(cfg["bar_data"], "demos").glob("*.sdfz"), key=lambda p: p.stat().st_mtime, reverse=True)[:50]
+    scanned = pipeline.scanned_names(cfg["bar_data"])
     rows = []
     for demo in demos:
         info = pipeline.demo_info(demo)
         if not info or info["game"].startswith("BAR Rewind"):  # recordings of this player itself
             continue
+        missing = pipeline.demo_missing(cfg["bar_data"], info, scanned)
         rows.append({"file": demo.name, "date": demo.name[:16].replace("_", " "), "map": info["map"],
                      "players": info["players"], "length": info["length"],
                      "parsed": pipeline.curves_path(cfg, demo).exists(),
-                     "problem": pipeline.demo_problem(cfg["bar_data"], info), "warning": pipeline.demo_warning(info)})
+                     "problem": pipeline.demo_problem(info), "warning": pipeline.demo_warning(info),
+                     "missing": [f"{kind} {name}" for kind, name in missing]})
     return rows
 
 
@@ -45,7 +48,12 @@ def run_job(file, mode):
     cancelled = False
     job.update(file=file, mode=mode, pct=0, text="starting", running=True, error="", started=time.time(), done=0)
     try:
-        for event in pipeline.parse(cfg, demo):
+        if mode == "download":
+            info = pipeline.demo_info(demo)
+            steps = pipeline.download(cfg["bar_data"], pipeline.demo_missing(cfg["bar_data"], info))
+        else:
+            steps = pipeline.parse(cfg, demo)
+        for event in steps:
             if event[0] == "proc":
                 proc = event[1]
             else:
@@ -58,7 +66,8 @@ def run_job(file, mode):
                 job["error"] = "play failed:\n" + tail(Path(cfg["out_dir"], "play.log"))
             job["text"] = "BAR closed"
     except Exception as e:
-        job["error"] = "cancelled" if cancelled else f"{e}\n" + tail(Path(cfg["out_dir"], "curves", "dump.log"))
+        log = "" if mode == "download" else "\n" + tail(Path(cfg["out_dir"], "curves", "dump.log"))
+        job["error"] = "cancelled" if cancelled else f"{e}{log}"
     job.update(running=False, done=time.time())
 
 
@@ -222,6 +231,8 @@ async function load() {
         <div class="row">
           ${r.parsed ? `<button class="primary" data-file="${esc(r.file)}" data-mode="play">Play</button>`
             : r.problem ? `<button disabled title="${esc(r.problem)}">Parse</button>`
+            : r.missing.length ? `<button disabled title="needs ${esc(r.missing.join(', '))}">Parse</button>
+                <button data-file="${esc(r.file)}" data-mode="download" title="fetch ${esc(r.missing.join(', '))} with BAR's downloader" data-title="fetch ${esc(r.missing.join(', '))} with BAR's downloader">Download</button>`
             : `<button data-file="${esc(r.file)}" data-mode="parse" title="${esc(r.warning || '')}" data-title="${esc(r.warning || '')}">Parse</button>`}
         </div>
       </div>
@@ -257,12 +268,12 @@ async function poll() {
     $('elapsed').textContent = '';
     return;
   }
-  const name = j.file.slice(0, 16).replace('_', ' ') + ' · ' + (j.mode === 'play' ? 'play' : 'parse');
+  const name = j.file.slice(0, 16).replace('_', ' ') + ' · ' + j.mode;
   const failed = !!j.error;
   const finished = !j.running && !failed;
   if (!j.running && busy) { setBusy(false); await load(); }
   $('jobname').textContent = name;
-  $('jobtext').textContent = j.running ? j.text : failed ? (j.error.split('\n')[0]) : (j.mode === 'play' ? 'BAR closed' : 'parsed') + ' · ' + summary;
+  $('jobtext').textContent = j.running ? j.text : failed ? (j.error.split('\n')[0]) : ({play: 'BAR closed', parse: 'parsed', download: 'downloaded'}[j.mode]) + ' · ' + summary;
   $('jobtext').className = failed ? 'error' : 'dim';
   $('pct').style.width = (j.running ? j.pct : 100) + '%';
   $('bar').className = 'bar ' + (j.running ? '' : failed ? 'failed' : 'ok');

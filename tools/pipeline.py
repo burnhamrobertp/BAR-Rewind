@@ -141,14 +141,112 @@ def demo_info(path):
             "length": f"{secs // 60}:{secs % 60:02}", "frames": frames, "engine": engine}
 
 
-def demo_problem(bar, info):
-    """Why a parse cannot work, or None."""
+def demo_problem(info):
+    """Why a parse can never work, or None."""
     if info["frames"] == 0:
         return "the game never started in this recording"
-    if not Path(bar, "engine", "recoil_" + info["engine"]).is_dir():
-        return f"needs engine {info['engine']}, which is not installed"
 
     return None
+
+
+# installed content ---------------------------------------------------------------------------------
+
+def scanned_names(bar):
+    """Lowercased names of every map and game the engine's archive scan found."""
+    caches = sorted(Path(bar, "cache").glob("ArchiveCache*.lua"), key=lambda p: p.stat().st_mtime)
+    if not caches:
+        return set()
+
+    return {n.lower() for n in re.findall(r'\bname = "([^"]*)"', caches[-1].read_text(errors="replace"))}
+
+
+def rapid_installed(bar, name):
+    """True when rapid's index has `name` and its package file is on disk."""
+    for versions in Path(bar, "rapid").glob("*/*/versions.gz"):
+        for line in gzip.open(versions).read().decode(errors="replace").splitlines():
+            parts = line.split(",", 3)
+            if len(parts) == 4 and parts[3] == name and Path(bar, "packages", parts[1] + ".sdp").exists():
+                return True
+
+    return False
+
+
+def map_file(bar, name):
+    want = re.sub(r"[^a-z0-9.-]+", "_", name.lower())
+    maps = Path(bar, "maps")
+    if not maps.is_dir():
+        return None
+
+    return next((p for p in maps.iterdir() if p.suffix in (".sd7", ".sdz") and p.stem == want), None)
+
+
+def demo_missing(bar, info, scanned=None):
+    """What a parse of this replay needs that is not installed: [(kind, name)], kind engine / game / map.
+    The archive scan is only refreshed when the engine runs, so content downloaded since counts too."""
+    if scanned is None:
+        scanned = scanned_names(bar)
+    missing = []
+    if not Path(bar, "engine", "recoil_" + info["engine"]).is_dir():
+        missing.append(("engine", info["engine"]))
+    game = info["game"]
+    if game != "?" and "$VERSION" not in game and game.lower() not in scanned and not rapid_installed(bar, game):
+        missing.append(("game", game))
+    if info["map"] != "?" and info["map"].lower() not in scanned and not map_file(bar, info["map"]):
+        missing.append(("map", info["map"]))
+
+    return missing
+
+
+def prd_exe(bar):
+    """BAR's own downloader: shipped with every engine, and beside the launcher."""
+    name = "pr-downloader" + EXE
+    engines = sorted(Path(bar, "engine").glob("recoil_*"), reverse=True)
+    for p in [e / name for e in engines] + [Path(bar).parent / "bin" / name]:
+        if p.exists():
+            return p
+
+    raise RuntimeError("no pr-downloader found in BAR's engine or bin folders")
+
+
+# the repositories BAR's launcher points pr-downloader at
+PRD_ENV = {
+    "PRD_RAPID_REPO_MASTER": "https://repos-cdn.beyondallreason.dev/repos.gz",
+    "PRD_HTTP_SEARCH_URL": "https://files-cdn.beyondallreason.dev/find",
+    "PRD_RAPID_USE_STREAMER": "false",
+}
+
+
+def download(bar, missing):
+    """Generator: yields ("proc", Popen) once, then ("progress", pct, text). Fetches `missing`
+    (from demo_missing) into BAR's data folder; raises RuntimeError with pr-downloader's last words."""
+    flags = {"engine": "--download-engine", "game": "--download-game", "map": "--download-map"}
+    args = [str(prd_exe(bar)), "--filesystem-writepath", str(bar)]
+    for kind, name in missing:
+        args += [flags[kind], name]
+    what = ", ".join(f"{kind} {name}" for kind, name in missing)
+    yield "progress", 0, "downloading " + what
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env={**os.environ, **PRD_ENV},
+                            **new_group())
+    yield "proc", proc
+    lines = []
+    buf = b""
+    # progress lines end in \r, not \n
+    while chunk := proc.stdout.read1(4096):
+        buf += chunk
+        *done, buf = re.split(rb"[\r\n]", buf)
+        for raw in done:
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            lines = (lines + [line])[-40:]
+            m = re.search(r"\[Progress\]\s+(\d+)%", line)
+            if m:
+                yield "progress", int(m.group(1)), "downloading " + what
+    if proc.wait() != 0:
+        errors = [l for l in lines if re.search(r"(?i)\berror\b|failed|not found", l)]
+        raise RuntimeError("download failed: " + (errors[-1] if errors else f"pr-downloader exit {proc.returncode}")
+                           + "\n" + "\n".join(lines[-15:]))
+    yield "progress", 100, "downloaded " + what
 
 
 def demo_warning(info):
@@ -225,7 +323,7 @@ def parse(cfg, demo):
                     shown = pct
                     yield "progress", pct, f"re-simulating, {frame // 1800}:{frame // 30 % 60:02} of {total // 1800}:{total // 30 % 60:02} game time"
         if proc.returncode < 0 or not (dump / "bardump.jsonl").exists():
-            raise RuntimeError(f"parse failed (engine exit {proc.returncode}), see {log}")
+            raise RuntimeError(engine_error(log) or f"parse failed (engine exit {proc.returncode}), see {log}")
         yield "progress", 100, "baking the recording into keyframes"
         tmp = curves.with_suffix(".jsonl")
         shutil.move(dump / "bardump.jsonl", tmp)
@@ -245,6 +343,16 @@ def parse(cfg, demo):
         widget.unlink(missing_ok=True)
         widget_eco.unlink(missing_ok=True)
     yield "progress", 100, "parsed"
+
+
+def engine_error(log):
+    """The engine's own reason for quitting (its Fatal errorMsg), or None."""
+    try:
+        hits = re.findall(r'errorMsg="([^"]*)"', Path(log).read_text(errors="replace"))
+    except OSError:
+        return None
+
+    return hits[-1] if hits else None
 
 
 def last_load_message(log):
