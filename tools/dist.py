@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
-FILES = ["tools/pipeline.py", "tools/ui.py", "lua/dump_replay.lua", "README.md", "LICENSE"]
+FILES = ["tools/pipeline.py", "tools/ui.py", "lua/dump_replay.lua", "lua/dump_replay_eco.lua", "README.md", "LICENSE"]
 BAT = '@echo off\r\nwhere py >nul 2>nul && (py -3 "%~dp0tools\\ui.py") || (python "%~dp0tools\\ui.py")\r\nif errorlevel 1 pause\r\n'
 SH = '#!/bin/sh\nexec python3 "$(dirname "$(realpath "$0")")/tools/ui.py" "$@"\n'
 
