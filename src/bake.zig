@@ -649,7 +649,7 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     // names instead of ids: the playing BAR version may number defs differently than the replay's
     const Named = struct { name: []const u8 = "" };
     const Team = struct { color: [3]f32 = .{ 1, 1, 1 }, ally: i32 = 0, leader: ?[]const u8 = null };
-    const Chat = struct { f: u32 = 0, name: []const u8 = "", team: i32 = -1, spec: bool = false, channel: []const u8 = "all", text: []const u8 = "" };
+    const Chat = struct { f: u32 = 0, name: []const u8 = "", team: i32 = -1, spec: bool = false, channel: []const u8 = "all", text: []const u8 = "", pre: bool = false };
     const Marker = struct {
         f: u32 = 0,
         name: []const u8 = "",
@@ -686,7 +686,7 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     }
     try w.writeAll(" },\n  chat = {\n");
     for (meta.chat) |c| {
-        try w.print("    {{ f = {d}, team = {d}, spec = {}, channel = ", .{ c.f, c.team, c.spec });
+        try w.print("    {{ f = {d}, team = {d}, spec = {}, pre = {}, channel = ", .{ c.f, c.team, c.spec, c.pre });
         try luaString(w, c.channel);
         try w.writeAll(", name = ");
         try luaString(w, c.name);

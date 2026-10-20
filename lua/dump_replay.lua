@@ -63,6 +63,7 @@ local function json(v, depth)
 end
 
 local pending = {}
+local gameStarted = false
 
 local function line(key, value)
 	local text = '{"' .. key .. '":' .. json(value) .. "}\n"
@@ -98,7 +99,11 @@ function widget:AddConsoleLine(msg)
 	local known, team, spec = playerByName(name)
 	if not known then return end
 	line("chat", { f = math.max(0, S.GetGameFrame()), name = name, team = team or -1, spec = spec or false,
-		channel = channel, text = text })
+		channel = channel, text = text, pre = not gameStarted })
+end
+
+function widget:GameStart()
+	gameStarted = true
 end
 
 function widget:MapDrawCmd(playerID, cmdType, px, py, pz, a, b, c)
