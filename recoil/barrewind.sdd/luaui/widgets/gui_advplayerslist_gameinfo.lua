@@ -3,7 +3,7 @@ local widget = widget ---@type Widget
 function widget:GetInfo()
 	return {
 		name = "AdvPlayersList Game Info",
-		desc = "BAR Rewind: replay time, speed and scrub bar, in the game info panel's place. Space play/pause, R reverse, Left/Right 10 s, Up/Down speed",
+		desc = "BAR Rewind: replay time, speed and scrub bar, in the game info panel's place. Play is 1x; rewind and fast-forward start at 2x and double. Space play/pause, R reverse, Left/Right 10 s, Up/Down speed",
 		author = "burnhamrobertp",
 		date = "2026-10-20",
 		license = "GNU GPL, v2 or later",
@@ -155,11 +155,11 @@ local function seekTo(mx)
 	Send("replay:seek " .. mathFloor(first + f * (last - first)))
 end
 
--- << and >>: play that way at 1x, or twice as fast when already playing that way
+-- play is always 1x forward; << and >> start at 2x their way and double from there
 local function faster(direction)
 	local _, _, _, playing, speed = state()
 	if not playing or (speed > 0) ~= (direction > 0) then
-		Send("replay:speed " .. direction)
+		Send("replay:speed " .. 2 * direction)
 	else
 		Send("replay:speed " .. mathMin(mathAbs(speed) * 2, MAX_SPEED) * direction)
 	end

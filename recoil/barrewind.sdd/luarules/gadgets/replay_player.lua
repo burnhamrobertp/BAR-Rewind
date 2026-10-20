@@ -876,6 +876,7 @@ function gadget:RecvLuaMsg(msg, player)
 		t = math.max(M.first_frame, math.min(M.last_frame, tonumber(arg) or t))
 	elseif cmd == "play" then
 		playing = true
+		speed = 1
 	elseif cmd == "pause" then
 		playing = false
 	elseif cmd == "speed" then
