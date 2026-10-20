@@ -45,6 +45,8 @@ const UnitBuild = struct {
     unit: Unit,
     last_frame: u32,
     queues: List(curves.Queue) = .empty,
+    /// (frame, team) whenever the team differs from the last sample's
+    teams: List([2]u32) = .empty,
     transforms: List(TransformKey) = .empty,
     statuses: List(StatusKey) = .empty,
     targets: List(curves.TargetKey) = .empty,
@@ -70,6 +72,7 @@ const Bake = struct {
     pieces_meta: List(u8) = .empty,
     chat_meta: List(u8) = .empty,
     markers_meta: List(u8) = .empty,
+    cameras_meta: List(u8) = .empty,
     /// per unit def: parent piece index (1-based, 0 = root) and original offset for each piece
     parents: std.AutoHashMapUnmanaged(u32, []const u32) = .empty,
     offsets: std.AutoHashMapUnmanaged(u32, []const [3]f32) = .empty,
@@ -114,7 +117,9 @@ fn addSample(b: *Bake, s: Sample) !void {
         }
         const u = &b.units.items[entry.value_ptr.*];
         u.last_frame = f;
-        u.unit.team = @intFromFloat(row[2]); // captured units change team; ponytail: last team wins
+        const team: u32 = @intFromFloat(row[2]);
+        const current = if (u.teams.items.len > 0) u.teams.getLast()[1] else u.unit.team;
+        if (team != current) try u.teams.append(gpa, .{ f, team });
         var t: TransformKey = .{ .t = f, .v = undefined };
         for (&t.v, row[3..12]) |*o, x| o.* = @floatCast(x);
         try u.transforms.append(gpa, t);
@@ -266,6 +271,59 @@ fn addBinarySamples(b: *Bake, arena_state: *std.heap.ArenaAllocator, bin: []cons
     }
 }
 
+/// Records written by the dump widget into bardump_view.bin (see it): cursors become one thinned
+/// curve per player, camera states keys as recorded.
+fn addView(
+    gpa: std.mem.Allocator,
+    view: []const u8,
+    tracks: *Out(.cursor_tracks),
+    keys: *Out(.cursor_keys),
+    cams: *Out(.camera_keys),
+    values: *Out(.camera_values),
+    stats: *Stats,
+) !void {
+    if (view.len < 8 or !std.mem.eql(u8, view[0..4], "BRVW")) return error.BadView;
+    var per: std.AutoArrayHashMapUnmanaged(u32, List(curves.CursorKey)) = .empty;
+    defer per.deinit(gpa);
+    var at: usize = 8;
+    while (at + 16 <= view.len) {
+        var h: [4]u32 = undefined;
+        for (&h, 0..) |*o, i| o.* = std.mem.readInt(u32, view[at + i * 4 ..][0..4], .little);
+        at += 16;
+        const n: usize = h[3];
+        if (at + n * 4 > view.len) break;
+        const raw = view[at..][0 .. n * 4];
+        at += n * 4;
+        const f = struct {
+            fn get(bytes: []const u8, i: usize) f32 {
+                return @bitCast(std.mem.readInt(u32, bytes[i * 4 ..][0..4], .little));
+            }
+        }.get;
+        switch (h[1]) {
+            1 => if (n == 5) {
+                var k: curves.CursorKey = .{ .t = h[0], .v = undefined };
+                for (&k.v, 0..) |*o, i| o.* = f(raw, i);
+                const entry = try per.getOrPut(gpa, h[2]);
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
+                try entry.value_ptr.append(gpa, k);
+            },
+            2, 3 => {
+                const first: u32 = @intCast(values.items.len);
+                const mode: i32 = if (h[1] == 2 and n > 0) @intFromFloat(f(raw, 0)) else -1;
+                for (@min(n, @intFromBool(h[1] == 2))..n) |i| try values.append(gpa, f(raw, i));
+                try cams.append(gpa, .{ .t = h[0], .player = h[2], .mode = mode, .values = .{ .first = first, .count = @intCast(values.items.len - first) } });
+            },
+            else => {},
+        }
+    }
+    // within 8 elmos; a click always keeps its key
+    const scale: [5]f32 = .{ 1.0 / 16.0, 1.0 / 16.0, 1.0 / 16.0, 1.0 / 16.0, 100 };
+    for (per.keys(), per.values()) |player, *list| {
+        defer list.deinit(gpa);
+        try tracks.append(gpa, .{ .player = player, .keys = try bakeCurve(curves.CursorKey, gpa, list.items, scale, keys, stats) });
+    }
+}
+
 /// Header lines ({"map":...}, {"defs":...}, one {"pieces":...} per unit def) become one JSON object.
 fn addHeader(b: *Bake, line: []const u8) !void {
     const gpa = b.gpa;
@@ -289,7 +347,7 @@ fn addHeader(b: *Bake, line: []const u8) !void {
         return;
     }
     // one line per message or mark, collected into arrays
-    inline for (.{ .{ "\"chat\":", &b.chat_meta }, .{ "\"marker\":", &b.markers_meta } }) |pair| {
+    inline for (.{ .{ "\"chat\":", &b.chat_meta }, .{ "\"marker\":", &b.markers_meta }, .{ "\"camkeys\":", &b.cameras_meta } }) |pair| {
         if (std.mem.startsWith(u8, inner, pair[0])) {
             try pair[1].append(gpa, if (pair[1].items.len == 0) '[' else ',');
             try pair[1].appendSlice(gpa, inner[pair[0].len..]);
@@ -334,8 +392,12 @@ pub fn main(init: std.process.Init) !void {
     const gpa = std.heap.smp_allocator;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len == 4 and std.mem.eql(u8, args[1], "export-lua")) return exportLua(io, gpa, args[2], args[3]);
+    if (args.len == 2 and std.mem.eql(u8, args[1], "version")) {
+        std.log.info("curves version {d}", .{curves.version});
+        return;
+    }
     if (args.len != 3) {
-        std.log.err("usage: bake <bardump.jsonl> <out.curves> | bake export-lua <in.curves> <out-dir>", .{});
+        std.log.err("usage: bake <bardump.jsonl> <out.curves> | bake export-lua <in.curves> <out-dir> | bake version", .{});
         std.process.exit(2);
     }
 
@@ -358,10 +420,25 @@ pub fn main(init: std.process.Init) !void {
     const bin = try std.Io.Dir.cwd().readFileAlloc(io, bin_path, gpa, .limited(64 << 30));
     try addBinarySamples(&b, &parse_arena, bin);
     gpa.free(bin);
+
+    // what the players looked at, when the dump recorded it: out.jsonl -> out.view.bin
+    var cursor_tracks: Out(.cursor_tracks) = .empty;
+    var cursor_keys: Out(.cursor_keys) = .empty;
+    var camera_keys: Out(.camera_keys) = .empty;
+    var camera_values: Out(.camera_values) = .empty;
+    var cursor_stats: Stats = .{};
+    const view_path = try std.fmt.allocPrint(gpa, "{s}.view.bin", .{stem});
+    if (std.Io.Dir.cwd().readFileAlloc(io, view_path, gpa, .limited(16 << 30))) |view| {
+        defer gpa.free(view);
+        try addView(gpa, view, &cursor_tracks, &cursor_keys, &camera_keys, &camera_values, &cursor_stats);
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
     if (b.pieces_meta.items.len > 0) try b.pieces_meta.append(gpa, ']') else try b.pieces_meta.appendSlice(gpa, "[]");
     try b.meta.appendSlice(gpa, if (b.meta.items.len == 0) "{\"pieces\":" else ",\"pieces\":");
     try b.meta.appendSlice(gpa, b.pieces_meta.items);
-    inline for (.{ .{ ",\"chat\":", &b.chat_meta }, .{ ",\"markers\":", &b.markers_meta } }) |pair| {
+    inline for (.{ .{ ",\"chat\":", &b.chat_meta }, .{ ",\"markers\":", &b.markers_meta }, .{ ",\"cameras\":", &b.cameras_meta } }) |pair| {
         try b.meta.appendSlice(gpa, pair[0]);
         if (pair[1].items.len > 0) {
             try pair[1].append(gpa, ']');
@@ -386,11 +463,13 @@ pub fn main(init: std.process.Init) !void {
     var pose_keys: Out(.pose_keys) = .empty;
     var targets: Out(.targets) = .empty;
     var queues: Out(.queues) = .empty;
+    var team_keys: Out(.team_keys) = .empty;
     var st: [4]Stats = @splat(.{});
 
     for (b.units.items) |*u| {
         var unit = u.unit;
         unit.died = died(u.last_frame, b.last_unit_frame, b.step);
+        for (u.teams.items) |k| try team_keys.append(gpa, .{ .unit = @intCast(units.items.len), .t = k[0], .team = k[1] });
         try queues.appendSlice(gpa, u.queues.items);
         // the plan ends with the builder
         if (unit.died != curves.alive_forever and u.queues.items.len > 0 and u.queues.getLast().items.count > 0)
@@ -452,7 +531,8 @@ pub fn main(init: std.process.Init) !void {
     const sections = .{
         b.meta.items,     units.items,      transforms.items,  statuses.items,        tracks.items,
         b.features.items, projectiles.items, projectile_keys.items, pose_keys.items, targets.items,
-        b.terrain.items, queues.items, b.queue_items.items,
+        b.terrain.items, queues.items, b.queue_items.items, team_keys.items,
+        cursor_tracks.items, cursor_keys.items, camera_keys.items, camera_values.items,
     };
     var offset: u64 = std.mem.alignForward(u64, @sizeOf(curves.Header), 16);
     inline for (sections, 0..) |items, i| {
@@ -467,10 +547,11 @@ pub fn main(init: std.process.Init) !void {
     inline for (sections, 0..) |items, i| try file.writePositionalAll(io, std.mem.sliceAsBytes(items), header.offsets[i]);
 
     const names = [_][]const u8{ "transform", "status", "pose", "projectile" };
-    std.log.info("frames {d}..{d}, {d} units, {d} features, {d} projectiles, {d} terrain changes, {d} queues, {d} MB", .{
-        b.first_frame, b.last_frame, units.items.len, b.features.items.len, projectiles.items.len, b.terrain.items.len, queues.items.len, offset >> 20,
+    std.log.info("frames {d}..{d}, {d} units, {d} features, {d} projectiles, {d} terrain changes, {d} queues, {d} team changes, {d} MB", .{
+        b.first_frame, b.last_frame, units.items.len, b.features.items.len, projectiles.items.len, b.terrain.items.len, queues.items.len, team_keys.items.len, offset >> 20,
     });
     for (st, names) |s, name| std.log.info("{s}: {d} -> {d} keys, worst error {d:.3}", .{ name, s.in, s.out, s.worst });
+    std.log.info("cursor: {d} -> {d} keys for {d} players, camera: {d} keys", .{ cursor_stats.in, cursor_stats.out, cursor_tracks.items.len, camera_keys.items.len });
     for (st) |s| if (s.worst > tolerance + 1e-3) {
         std.log.err("baked curve exceeds tolerance", .{});
         std.process.exit(1);
@@ -664,6 +745,7 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
         z2: f32 = 0,
         label: []const u8 = "",
     };
+    const Camera = struct { mode: i32 = -1, name: []const u8 = "", keys: []const []const u8 = &.{} };
     const Meta = struct {
         map: struct { name: []const u8 = "" } = .{},
         defs: std.json.ArrayHashMap(Named) = .{},
@@ -672,6 +754,8 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
         teams: std.json.ArrayHashMap(Team) = .{},
         chat: []const Chat = &.{},
         markers: []const Marker = &.{},
+        players: std.json.ArrayHashMap([]const u8) = .{},
+        cameras: []const Camera = &.{},
     };
     const meta = try std.json.parseFromSliceLeaky(Meta, gpa, file.meta, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
     try w.print("  map = \"{s}\",\n", .{meta.map.name});
@@ -703,6 +787,24 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
         try w.print(", x = {d}, y = {d}, z = {d}, x2 = {d}, y2 = {d}, z2 = {d}, label = ", .{ m.x, m.y, m.z, m.x2, m.y2, m.z2 });
         try luaString(w, m.label);
         try w.writeAll(" },\n");
+    }
+    try w.writeAll("  },\n  players = {");
+    for (meta.players.map.keys(), meta.players.map.values()) |id, name| {
+        try w.print(" [{s}] = ", .{id});
+        try luaString(w, name);
+        try w.writeAll(",");
+    }
+    try w.writeAll(" },\n  cameras = {\n");
+    for (meta.cameras) |cam| {
+        try w.print("    [{d}] = {{ name = ", .{cam.mode});
+        try luaString(w, cam.name);
+        try w.writeAll(", keys = {");
+        for (cam.keys) |k| {
+            try w.writeAll(" ");
+            try luaString(w, k);
+            try w.writeAll(",");
+        }
+        try w.writeAll(" } },\n");
     }
     try w.writeAll("  },\n}\n");
     const meta_file = try dir.createFile(io, "meta.lua", .{});

@@ -220,6 +220,13 @@ local function writeHeaders()
 		teams[tostring(id)] = { color = { r, g, b }, ally = ally, side = side, ai = isAI, leader = name }
 	end
 	line("teams", teams)
+
+	local players = {}
+	for _, id in ipairs(S.GetPlayerList()) do
+		local name = S.GetPlayerInfo(id, false)
+		if name then players[tostring(id)] = name end
+	end
+	line("players", players)
 end
 
 local function writePieces(u, def)
@@ -459,6 +466,49 @@ end
 
 local bin = nil
 
+-- what players looked at: their cursors and cameras, as BAR's broadcast gadgets decoded them, into
+-- bardump_view.bin. Record: u32 frame, kind (1 cursor, 2 camera, 3 camera stopped), player, n,
+-- then n f32: cursor x1, z1, x2, z2, click; camera mode, then its fields in the order the
+-- "camkeys" header line gives for that mode. Repeats of a player's last record are dropped.
+local view = nil
+local lastView = {} -- [kind .. player] = string of the last record's values
+local camKeys = {} -- [mode] = sorted field names
+
+local function writeView(kind, player, values)
+	if not view then return end
+	local key = kind .. ":" .. player
+	local sig = concat(values, ",")
+	if lastView[key] == sig then return end
+	lastView[key] = sig
+	view:write(VFS.PackU32(math.max(0, S.GetGameFrame()), kind, player, #values))
+	if #values > 0 then view:write(VFS.PackF32(values)) end
+end
+
+function widget:MouseCursorEvent(playerID, x1, z1, x2, z2, click)
+	writeView(1, playerID, { x1 or 0, z1 or 0, x2 or x1 or 0, z2 or z1 or 0, click and 1 or 0 })
+end
+
+function widget:CameraBroadcastEvent(playerID, state)
+	if not state then
+		lastView["2:" .. playerID] = nil
+		return writeView(3, playerID, {})
+	end
+	local mode = state.mode or -1
+	local keys = camKeys[mode]
+	if not keys then
+		keys = {}
+		for k, v in pairs(state) do
+			if type(v) == "number" and k ~= "mode" then keys[#keys + 1] = k end
+		end
+		table.sort(keys)
+		camKeys[mode] = keys
+		line("camkeys", { mode = mode, name = state.name or "", keys = keys })
+	end
+	local values = { mode }
+	for i = 1, #keys do values[i + 1] = state[keys[i]] or 0 end
+	writeView(2, playerID, values)
+end
+
 local function writeFrame(frame)
 	local us, ps, fa, fr, pr, ts, qs = {}, {}, {}, {}, {}, {}, {}
 	if frame % SAMPLE_EVERY == 0 then
@@ -532,6 +582,10 @@ local function stop(quit)
 		bin:close()
 		bin = nil
 	end
+	if view then
+		view:close()
+		view = nil
+	end
 	if file then
 		file:write('{"end":true}\n')
 		file:close()
@@ -572,6 +626,8 @@ function widget:GameFrame(frame)
 		-- binary mode: text mode writes \r\n on Windows
 		file = io.open(path, "wb")
 		bin = io.open(DIR .. "bardump.bin", "wb")
+		view = io.open(DIR .. "bardump_view.bin", "wb")
+		if view then view:write("BRVW", VFS.PackU32(1)) end
 		-- file header: magic, format version, floats per unit row
 		if bin then bin:write("BRDB", VFS.PackU32(3, UNIT_ROW)) end
 		if not file or not bin then

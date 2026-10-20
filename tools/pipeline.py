@@ -76,6 +76,24 @@ def bake_exe():
     raise SystemExit("no bake binary: run `zig build` first")
 
 
+def bake_version():
+    r = subprocess.run([str(bake_exe()), "version"], capture_output=True, text=True)
+    m = re.search(r"curves version (\d+)", r.stdout + r.stderr)
+
+    return int(m.group(1)) if m else None
+
+
+def curves_version(path):
+    """The format version in a .curves header ("BRC1", u32 version), or None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return None
+
+    return struct.unpack_from("<I", head, 4)[0] if len(head) == 8 and head[:4] == b"BRC1" else None
+
+
 def open_folder(path):
     Path(path).mkdir(parents=True, exist_ok=True)
     if WINDOWS:
@@ -275,8 +293,8 @@ def parse(cfg, demo):
         raise RuntimeError(f"{demo.name} is a recording of this player, not a match")
     curves = curves_path(cfg, demo)
     curves.parent.mkdir(parents=True, exist_ok=True)
-    # ponytail: cache keyed by file name only; delete <out>/curves/ after a curves format change
-    if curves.exists():
+    # ponytail: cache keyed by file name only
+    if curves.exists() and curves_version(curves) == bake_version():
         yield "progress", 100, "cached"
         return
     total = demo_last_frame(demo)
@@ -291,7 +309,7 @@ def parse(cfg, demo):
     # LuaUI/Config is the one folder BAR lets a user widget both read and write (bar-game #9547)
     dump = bar / "LuaUI" / "Config"
     dump.mkdir(parents=True, exist_ok=True)
-    for f in ("bardump.jsonl", "bardump.bin", "bardump_eco.bin"):
+    for f in ("bardump.jsonl", "bardump.bin", "bardump_eco.bin", "bardump_view.bin"):
         (dump / f).unlink(missing_ok=True)
     # the widget stops at the replay's last frame (an unfinished replay never reaches GameOver)
     (dump / "bardump.request").write_text(f"dump {total}\n")
@@ -328,11 +346,14 @@ def parse(cfg, demo):
         tmp = curves.with_suffix(".jsonl")
         shutil.move(dump / "bardump.jsonl", tmp)
         shutil.move(dump / "bardump.bin", tmp.with_suffix(".bin"))
+        if (dump / "bardump_view.bin").exists():
+            shutil.move(dump / "bardump_view.bin", tmp.with_suffix(".view.bin"))
         r = subprocess.run([str(bake_exe()), str(tmp), str(curves)], capture_output=True, text=True)
         with open(log, "a") as out:
             out.write(r.stdout + r.stderr)
         tmp.unlink(missing_ok=True)
         tmp.with_suffix(".bin").unlink(missing_ok=True)
+        tmp.with_suffix(".view.bin").unlink(missing_ok=True)
         if r.returncode != 0:
             curves.unlink(missing_ok=True)
             raise RuntimeError(f"bake failed, see {log}")

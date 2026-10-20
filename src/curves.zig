@@ -4,7 +4,7 @@
 const std = @import("std");
 
 pub const magic = "BRC1".*;
-pub const version = 8;
+pub const version = 9;
 pub const alive_forever = std.math.maxInt(u32);
 
 pub fn Key(comptime n: usize) type {
@@ -102,7 +102,34 @@ pub const QueueItem = extern struct {
     facing: f32,
 };
 
-pub const Section = enum(u32) { meta, units, transforms, statuses, tracks, features, projectiles, projectile_keys, pose_keys, targets, terrain, queues, queue_items };
+/// A unit changing team at frame t (shared, given, captured). unit is the index into units, whose
+/// own team is the one it was built for. Sorted by unit, then t.
+pub const TeamKey = extern struct {
+    unit: u32,
+    t: u32,
+    team: u32,
+};
+
+/// A player's map cursor as BAR's cursor broadcast reports it: x1, z1, x2, z2, click (0 or 1)
+pub const CursorKey = Key(5);
+
+/// One player's cursor curve: `keys` in cursor_keys. player is the replay's player id.
+pub const CursorTrack = extern struct {
+    player: u32,
+    keys: Span,
+};
+
+/// A player's camera from frame t until their next key, as BAR's camera broadcast reports it:
+/// mode is the broadcast's camera id (-1: the player stopped broadcasting), `values` in
+/// camera_values are that mode's fields in the order meta.cameras lists them. Sorted by t.
+pub const CameraKey = extern struct {
+    t: u32,
+    player: u32,
+    mode: i32,
+    values: Span,
+};
+
+pub const Section = enum(u32) { meta, units, transforms, statuses, tracks, features, projectiles, projectile_keys, pose_keys, targets, terrain, queues, queue_items, team_keys, cursor_tracks, cursor_keys, camera_keys, camera_values };
 pub const section_names = @typeInfo(Section).@"enum".field_names;
 pub const section_count = section_names.len;
 
@@ -121,6 +148,11 @@ pub fn SectionType(comptime s: Section) type {
         .terrain => TerrainKey,
         .queues => Queue,
         .queue_items => QueueItem,
+        .team_keys => TeamKey,
+        .cursor_tracks => CursorTrack,
+        .cursor_keys => CursorKey,
+        .camera_keys => CameraKey,
+        .camera_values => f32,
     };
 }
 
@@ -150,6 +182,11 @@ pub const File = struct {
     terrain: []const TerrainKey,
     queues: []const Queue,
     queue_items: []const QueueItem,
+    team_keys: []const TeamKey,
+    cursor_tracks: []const CursorTrack,
+    cursor_keys: []const CursorKey,
+    camera_keys: []const CameraKey,
+    camera_values: []const f32,
 
     pub fn view(bytes: []align(16) const u8) error{BadCurves}!File {
         if (bytes.len < @sizeOf(Header)) return error.BadCurves;

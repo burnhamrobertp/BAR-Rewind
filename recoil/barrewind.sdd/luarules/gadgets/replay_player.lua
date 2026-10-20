@@ -274,6 +274,13 @@ local function loadRecords()
 		end
 		units[#units + 1] = u
 	end
+	-- older curves have no team changes: every unit keeps the team it was built for
+	local tk = M.sections.team_keys
+	for i = 0, (tk and tk.count or 0) - 1 do
+		local u = units[u32("team_keys", i, 0) + 1]
+		u.teams = u.teams or {}
+		u.teams[#u.teams + 1] = { t = u32("team_keys", i, 4), team = u32("team_keys", i, 8) }
+	end
 	for i = 0, M.sections.projectiles.count - 1 do
 		local str, pos = locate("projectiles", i, 0)
 		local def = U32(str, pos + 4)
@@ -307,6 +314,17 @@ end
 
 local function alive(r, t)
 	return r.born <= t and (r.died == ALIVE_FOREVER or t < r.died)
+end
+
+-- the team a unit belongs to at t: the one it was built for until its first recorded change
+local function teamAt(r, t)
+	local team = r.team
+	for k = 1, #(r.teams or {}) do
+		if r.teams[k].t > t then break end
+		team = r.teams[k].team
+	end
+
+	return team
 end
 
 -- teams: replay team ids map onto the script's teams (pipeline.py's start script numbers them the same)
@@ -351,8 +369,9 @@ local function spawnUnit(i, r)
 	if not name or not UnitDefNames[name] then return warnOnce("no unitdef " .. tostring(name)) end
 	local v = sampleW("transforms", r.index, 7, t, TF)
 	if not v then return nil end
-	local u = CreateUnit(name, v[1], v[2], v[3], 0, teamOf(r.team))
-	if not u then return warnOnce("CreateUnit failed: " .. name .. " team " .. r.team) end
+	local team = teamOf(teamAt(r, t))
+	local u = CreateUnit(name, v[1], v[2], v[3], 0, team)
+	if not u then return warnOnce("CreateUnit failed: " .. name .. " team " .. team) end
 	MoveCtrl.Enable(u)
 	-- BAR's own script animates: weapons never fire
 	for w = 1, #(UnitDefs[UnitDefNames[name].id].weapons or {}) do
@@ -619,7 +638,12 @@ local function syncUnits()
 				r.on, r.moving, r.target_type, r.hidden = nil, nil, nil, nil
 				r.work_cmd, r.work_target, r.work_power = nil, nil, nil
 			end
-			if u then place(u, r) end
+			if u then
+				-- a share the timeline crossed: the engine's own transfer, so BAR reacts as it did live
+				local team = teamOf(teamAt(r, t))
+				if r.teams and Spring.GetUnitTeam(u) ~= team then Spring.TransferUnit(u, team, true) end
+				place(u, r)
+			end
 		end
 	end
 end
