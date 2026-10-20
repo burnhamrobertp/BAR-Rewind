@@ -44,7 +44,7 @@ Map previews of `.sd7` maps need [7-Zip](https://www.7-zip.org/) (`7z` on Linux)
 
 ## Build from source (custom install)
 
-Needs [Zig](https://ziglang.org/) 0.16 and Python 3.
+Needs [Zig](https://ziglang.org/) 0.16 (0.17 dropped the `--` arguments `zig build run` passes on) and Python 3.
 
 ```sh
 zig build run                    # the app

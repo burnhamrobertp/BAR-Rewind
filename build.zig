@@ -1,5 +1,10 @@
 const std = @import("std");
 
+// 0.17 dropped Build.args (the words after `--`) with nothing a build.zig can read instead
+comptime {
+    if (!@hasField(std.Build, "args")) @compileError("BAR-Rewind builds with Zig 0.16: this Zig has no Build.args");
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{ .default_target = .{ .abi = .gnu } });
     const optimize = b.standardOptimizeOption(.{});
