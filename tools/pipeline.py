@@ -127,16 +127,36 @@ def demo_last_frame(path):
 
 
 def demo_info(path):
-    """{game, map, players, length} or None for an unreadable file."""
+    """{game, map, players, length, frames, engine} or None for an unreadable file."""
     try:
         text = demo_script(path)
-        secs = demo_last_frame(path) // 30
+        frames = demo_last_frame(path)
+        engine = demo_engine(path)
     except Exception:
         return None
+    secs = frames // 30
     players = [script_field(body, "name") for body in re.findall(r"(?i)\[(?:player|ai)\d+\]\s*\{([^{}]*)\}", text)
                if script_field(body, "spectator") != "1"]
     return {"game": script_field(text, "gametype"), "map": script_field(text, "mapname"), "players": players,
-            "length": f"{secs // 60}:{secs % 60:02}"}
+            "length": f"{secs // 60}:{secs % 60:02}", "frames": frames, "engine": engine}
+
+
+def demo_problem(bar, info):
+    """Why a parse cannot work, or None."""
+    if info["frames"] == 0:
+        return "the game never started in this recording"
+    if not Path(bar, "engine", "recoil_" + info["engine"]).is_dir():
+        return f"needs engine {info['engine']}, which is not installed"
+
+    return None
+
+
+def demo_warning(info):
+    """What may go wrong with a parse, or None."""
+    if "$VERSION" in info["game"]:
+        return "a dev-checkout game: it re-simulates against whatever that checkout is now, and desyncs if it changed"
+
+    return None
 
 
 # parse -------------------------------------------------------------------------------------------
@@ -162,6 +182,8 @@ def parse(cfg, demo):
         yield "progress", 100, "cached"
         return
     total = demo_last_frame(demo)
+    if total == 0:
+        raise RuntimeError(f"{demo.name}: the game never started in this recording")
     log = curves.parent / "dump.log"
     widget = bar / "LuaUI" / "Widgets" / WIDGET.name
     widget.parent.mkdir(parents=True, exist_ok=True)
@@ -178,7 +200,7 @@ def parse(cfg, demo):
     engine = engine_dir(bar, demo_engine(demo))
     headless = engine / ("spring-headless" + EXE)
     exe = headless if headless.exists() else engine / ("spring" + EXE)
-    yield "progress", 0, f"loading BAR ({total // 1800} min of game)"
+    yield "progress", 0, f"starting the headless engine for {total // 1800} min of game"
     try:
         with open(log, "w") as out:
             # ponytail: 2h timeout covers any real match at headless speed; raise it if a dump gets cut off
@@ -191,13 +213,20 @@ def parse(cfg, demo):
                     proc.kill()
                 time.sleep(1)
                 frame = last_dump_frame(log) or last_dump_frame(bar / "infolog.txt")
-                pct = frame * 100 // total if frame and total else -1
+                # a recording the engine cannot play sits in the pregame lobby forever
+                if not frame and time.time() - started > 300:
+                    proc.kill()
+                    raise RuntimeError(f"the engine never reached the game in 5 minutes, see {log}")
+                if not frame:
+                    yield "progress", 0, "loading BAR: " + (last_load_message(log) or "starting")
+                    continue
+                pct = frame * 100 // total if total else -1
                 if pct > shown:
                     shown = pct
-                    yield "progress", pct, f"parsing {pct}%"
+                    yield "progress", pct, f"re-simulating, {frame // 1800}:{frame // 30 % 60:02} of {total // 1800}:{total // 30 % 60:02} game time"
         if proc.returncode < 0 or not (dump / "bardump.jsonl").exists():
             raise RuntimeError(f"parse failed (engine exit {proc.returncode}), see {log}")
-        yield "progress", 100, "baking"
+        yield "progress", 100, "baking the recording into keyframes"
         tmp = curves.with_suffix(".jsonl")
         shutil.move(dump / "bardump.jsonl", tmp)
         shutil.move(dump / "bardump.bin", tmp.with_suffix(".bin"))
@@ -216,6 +245,20 @@ def parse(cfg, demo):
         widget.unlink(missing_ok=True)
         widget_eco.unlink(missing_ok=True)
     yield "progress", 100, "parsed"
+
+
+def last_load_message(log):
+    try:
+        with open(log, "rb") as f:
+            f.seek(max(0, f.seek(0, 2) - 65536))
+            hits = re.findall(rb'SetLoadMessage\] text="([^"]*)"|Loading (?:synced |unsynced )?(?:gadget|widget)[^:]*:\s+(.*?)\s+<', f.read())
+    except OSError:
+        return None
+    if not hits:
+        return None
+    text = hits[-1][0] or hits[-1][1]
+
+    return text.decode(errors="replace")
 
 
 def last_dump_frame(log):
@@ -401,9 +444,11 @@ def main(argv):
     if not bar_ok(cfg["bar_data"]):
         raise SystemExit(f"no BAR engine in {cfg['bar_data']}: set the BAR data folder in the app or in {config_path()}")
     if argv[0] in ("replay", "parse"):
+        last = None
         for event in parse(cfg, argv[1]):
-            if event[0] == "progress":
-                print(event[2], flush=True)
+            if event[0] == "progress" and event[2] != last:
+                last = event[2]
+                print(last, flush=True)
         if argv[0] == "parse":
             return
     shot = {"camera": argv[2], "png": argv[3]} if len(argv) >= 4 else None

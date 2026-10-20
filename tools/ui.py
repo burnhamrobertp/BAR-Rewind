@@ -20,8 +20,9 @@ def tail(path, n=20):
 
 
 # ponytail: one job at a time, a second Parse/Play waits for the first to finish or be cancelled
-job = {"file": None, "mode": None, "pct": 0, "text": "", "running": False, "error": ""}
+job = {"file": None, "mode": None, "pct": 0, "text": "", "running": False, "error": "", "started": 0, "done": 0}
 proc = None
+cancelled = False
 
 
 def replays():
@@ -33,14 +34,16 @@ def replays():
             continue
         rows.append({"file": demo.name, "date": demo.name[:16].replace("_", " "), "map": info["map"],
                      "players": info["players"], "length": info["length"],
-                     "parsed": pipeline.curves_path(cfg, demo).exists()})
+                     "parsed": pipeline.curves_path(cfg, demo).exists(),
+                     "problem": pipeline.demo_problem(cfg["bar_data"], info), "warning": pipeline.demo_warning(info)})
     return rows
 
 
 def run_job(file, mode):
-    global proc
+    global proc, cancelled
     demo = Path(cfg["bar_data"], "demos", file)
-    job.update(file=file, mode=mode, pct=0, text="starting...", running=True, error="")
+    cancelled = False
+    job.update(file=file, mode=mode, pct=0, text="starting", running=True, error="", started=time.time(), done=0)
     try:
         for event in pipeline.parse(cfg, demo):
             if event[0] == "proc":
@@ -48,15 +51,15 @@ def run_job(file, mode):
             else:
                 job.update(pct=max(event[1], 0), text=event[2])
         if mode == "play":
-            job["text"] = "BAR is starting..."
+            job.update(pct=100, text="BAR is starting")
             proc = pipeline.play(cfg, demo)
+            job["text"] = "BAR is open: close it to come back here"
             if proc.wait() != 0:
                 job["error"] = "play failed:\n" + tail(Path(cfg["out_dir"], "play.log"))
             job["text"] = "BAR closed"
     except Exception as e:
-        cancelled = proc is not None and proc.returncode is not None and proc.returncode < 0
         job["error"] = "cancelled" if cancelled else f"{e}\n" + tail(Path(cfg["out_dir"], "curves", "dump.log"))
-    job["running"] = False
+    job.update(running=False, done=time.time())
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -81,7 +84,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"bar": cfg["bar_data"], "out": cfg["out_dir"], "conf": str(pipeline.config_path()),
                                    "ok": ok, "replays": replays() if ok else []})
         if self.path == "/api/job":
-            return self.send(200, job)
+            end = job["done"] or time.time()
+            return self.send(200, dict(job, elapsed=int(end - job["started"]) if job["started"] else 0))
         if self.path.startswith("/map/"):
             name = unquote(self.path[5:])
             png = Path(cfg["out_dir"], "minimaps", Path(name).name + ".png")
@@ -117,7 +121,9 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=run_job, args=(file, data.get("mode")), daemon=True).start()
             return self.send(200, {})
         if self.path == "/api/cancel":
+            global cancelled
             if proc and proc.poll() is None:
+                cancelled = True
                 proc.kill()
             return self.send(200, {})
         self.send(404, {})
@@ -149,10 +155,23 @@ main { padding:20px 24px 100px; display:grid; grid-template-columns:repeat(auto-
 .players { color:var(--dim); margin:0; padding-left:18px; }
 .time { border:1px solid var(--line); border-radius:4px; padding:1px 6px; }
 .row { display:flex; gap:8px; align-items:center; margin-top:auto; padding-top:8px; }
-footer { position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--line); padding:12px 24px; display:none; gap:16px; align-items:center; }
-.bar { flex:1; height:8px; background:var(--bg); border-radius:4px; overflow:hidden; }
+footer { position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--line); padding:12px 24px; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; }
+footer .what { flex:1 1 320px; min-width:0; }
+footer .what b { margin-right:8px; }
+.bar { flex:1 1 200px; height:8px; background:var(--bg); border-radius:4px; overflow:hidden; }
 .bar div { height:100%; background:var(--accent); transition:width .5s; }
+.bar.idle div { background:var(--line); }
+.bar.failed div { background:var(--bad); }
+.bar.ok div { background:var(--ok); }
+.elapsed { color:var(--dim); font-variant-numeric:tabular-nums; min-width:5ch; text-align:right; }
 .error { color:var(--bad); white-space:pre-wrap; max-height:40vh; overflow:auto; font-family:monospace; }
+footer details { flex-basis:100%; }
+footer summary { color:var(--bad); cursor:pointer; }
+footer pre { margin:8px 0 0; max-height:30vh; overflow:auto; font-size:12px; color:var(--dim); white-space:pre-wrap; }
+main { padding-bottom:96px; }
+.card.active { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.card .stage { color:var(--accent); font-size:12px; }
+button:disabled { opacity:.45; cursor:default; }
 </style></head><body>
 <header>
   <h1>BAR Rewind</h1>
@@ -166,12 +185,20 @@ footer { position:fixed; bottom:0; left:0; right:0; background:var(--card); bord
   <span class="dim hint">Parsed replays (<code>curves/</code>), map previews and logs. Press Enter in either field to save; <span id="conf"></span></span>
 </header>
 <main id="list"></main>
-<footer id="job"><b id="jobname"></b><div class="bar"><div id="pct"></div></div><span id="jobtext"></span><button id="cancel" onclick="post('/api/cancel')">Cancel</button></footer>
+<footer id="job">
+  <div class="what"><b id="jobname">Ready</b><span id="jobtext" class="dim"></span></div>
+  <div class="bar idle" id="bar"><div id="pct"></div></div>
+  <span class="elapsed" id="elapsed"></span>
+  <button id="cancel" onclick="post('/api/cancel')" style="display:none">Cancel</button>
+  <details id="joberr" style="display:none"><summary id="errhead"></summary><pre id="errlog"></pre></details>
+</footer>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let busy = false;
+let summary = '';
 const saved = {bar: '', out: ''};
+const mmss = s => Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 const markUnsaved = () => $('save').classList.toggle('unsaved', $('bar').value !== saved.bar || $('out').value !== saved.out);
 async function post(url, body) {
   const r = await fetch(url, {method:'POST', body:JSON.stringify(body || {})});
@@ -183,23 +210,35 @@ async function load() {
   $('out').value = saved.out = d.out;
   markUnsaved();
   $('conf').textContent = 'settings are kept in ' + d.conf;
+  summary = d.replays.length + ' replays, ' + d.replays.filter(r => r.parsed).length + ' parsed';
   $('list').innerHTML = !d.ok ? '<p class="error">No BAR engine in that folder. Point it at BAR\'s data folder and Save.</p>'
     : d.replays.length ? d.replays.map(r => `
-    <div class="card">
+    <div class="card" data-card="${esc(r.file)}">
       <img loading="lazy" src="/map/${encodeURIComponent(r.map)}" alt="" onerror="this.style.visibility='hidden'">
       <div class="body">
         <div class="map">${esc(r.map)}</div>
-        <div class="dim">${esc(r.date)} <span class="time">${esc(r.length)}</span></div>
+        <div class="dim">${esc(r.date)} <span class="time">${esc(r.length)}</span> <span class="stage"></span></div>
         <ul class="players">${r.players.slice().sort((a, b) => a.localeCompare(b, undefined, {sensitivity:'base'})).map(p => `<li>${esc(p)}</li>`).join('')}</ul>
         <div class="row">
           ${r.parsed ? `<button class="primary" data-file="${esc(r.file)}" data-mode="play">Play</button>`
-                     : `<button data-file="${esc(r.file)}" data-mode="parse">Parse</button>`}
+            : r.problem ? `<button disabled title="${esc(r.problem)}">Parse</button>`
+            : `<button data-file="${esc(r.file)}" data-mode="parse" title="${esc(r.warning || '')}" data-title="${esc(r.warning || '')}">Parse</button>`}
         </div>
       </div>
     </div>`).join('') : '<p class="dim">No replays in demos/.</p>';
   setBusy(busy);
 }
-function setBusy(b) { busy = b; document.querySelectorAll('[data-file]').forEach(x => x.disabled = b); }
+function setBusy(b, why) {
+  busy = b;
+  document.querySelectorAll('[data-file]').forEach(x => { x.disabled = b; x.title = b ? 'busy: ' + why : (x.dataset.title || ''); });
+}
+function showOnCard(file, stage) {
+  document.querySelectorAll('.card').forEach(c => {
+    const mine = c.dataset.card === file;
+    c.classList.toggle('active', mine);
+    c.querySelector('.stage').textContent = mine ? stage : '';
+  });
+}
 async function saveFolders() {
   const err = await post('/api/folders', {bar: $('bar').value, out: $('out').value});
   if (err) alert(err); else load();
@@ -212,15 +251,34 @@ $('list').onclick = async e => {
 };
 async function poll() {
   const j = await (await fetch('/api/job')).json();
-  if (!j.file) return;
-  $('job').style.display = 'flex';
-  $('jobname').textContent = j.file.slice(0, 16).replace('_', ' ') + ' ' + (j.mode === 'play' ? 'play' : 'parse');
-  $('pct').style.width = j.pct + '%';
-  $('jobtext').textContent = j.error || j.text;
-  $('jobtext').className = j.error ? 'error' : '';
+  if (!j.file) {
+    $('jobname').textContent = 'Ready';
+    $('jobtext').textContent = summary;
+    $('elapsed').textContent = '';
+    return;
+  }
+  const name = j.file.slice(0, 16).replace('_', ' ') + ' · ' + (j.mode === 'play' ? 'play' : 'parse');
+  const failed = !!j.error;
+  const finished = !j.running && !failed;
+  if (!j.running && busy) { setBusy(false); await load(); }
+  $('jobname').textContent = name;
+  $('jobtext').textContent = j.running ? j.text : failed ? (j.error.split('\n')[0]) : (j.mode === 'play' ? 'BAR closed' : 'parsed') + ' · ' + summary;
+  $('jobtext').className = failed ? 'error' : 'dim';
+  $('pct').style.width = (j.running ? j.pct : 100) + '%';
+  $('bar').className = 'bar ' + (j.running ? '' : failed ? 'failed' : 'ok');
+  $('elapsed').textContent = mmss(j.elapsed);
   $('cancel').style.display = j.running ? '' : 'none';
-  if (j.running) { setBusy(true); setTimeout(poll, 1000); }
-  else if (busy) { setBusy(false); load(); }
+  $('joberr').style.display = failed ? '' : 'none';
+  if (failed) {
+    $('errhead').textContent = 'what the engine said';
+    $('errlog').textContent = j.error.split('\n').slice(1).join('\n') || '(no log)';
+  }
+  const stage = j.running ? j.text + (j.pct ? ' ' + j.pct + '%' : '') + ' · ' + mmss(j.elapsed) : failed ? 'failed' : finished ? 'done' : '';
+  if (j.running) {
+    setBusy(true, name);
+    setTimeout(poll, 1000);
+  }
+  showOnCard(j.file, stage);
 }
 for (const id of ['bar', 'out']) {
   $(id).addEventListener('keydown', e => { if (e.key === 'Enter') saveFolders(); });
