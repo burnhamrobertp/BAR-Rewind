@@ -45,6 +45,13 @@ if not gadgetHandler:IsSyncedCode() then
 			if sound then Spring.PlaySoundFile(sound.name, sound.volume or 1, x, y, z, "battle") end
 		end)
 	end
+
+	-- the start script lists the match's players so BAR knows them; they never connect, and the
+	-- server would otherwise wait 30 s for them
+	function gadget:Update()
+		if Spring.GetGameFrame() > 0 then return end
+		Spring.SendCommands("forcestart")
+	end
 	return
 end
 

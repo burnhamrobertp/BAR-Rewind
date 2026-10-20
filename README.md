@@ -74,8 +74,8 @@ within 0.5 [elmo](#whats-recorded "Recoil distance unit: one map grid square is 
 - **Aim pieces:** each weapon's barrel and everything it hangs from (torso, turret, arms), so a turret
   points the right way the moment you jump to any time
 - **Projectiles**, **features** (wrecks, trees), **terrain changes** and **build queues**
-- **Chat and map marks:** every message, point, drawn line and erase, shown at the time it happened
-  (playback draws these itself; BAR's own chat is replaced since the match's players are not in the game)
+- **Chat and map marks:** every message, point, drawn line and erase, fed into BAR's own chat and map
+  marks as the replay reaches them (the match's players are listed in the playback game so BAR knows them)
 
 BAR animates the rest itself, from the recorded movement: walk cycles, idle motion, deaths and explosions.
 

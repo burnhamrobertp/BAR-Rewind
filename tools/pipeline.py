@@ -247,6 +247,10 @@ def start_script(meta, replay_script):
     out = ["[GAME]", "{", f"\tMapName={mapname};", "\tGameType=BAR Rewind dev;", "\tIsHost=1;", "\tOnlyLocal=1;",
            "\tMyPlayerName=viewer;", "\tStartPosType=0;", "\tRecordDemo=0;",
            "\t[PLAYER0]", "\t{", "\t\tName=viewer;", "\t\tSpectator=1;", "\t}"]
+    # the match's players, who never connect: BAR's chat and map marks only show players it knows
+    for n, (_, body) in enumerate(sorted(re.findall(r"(?is)\[player(\d+)\]\s*\{([^{}]*)\}", replay_script), key=lambda p: int(p[0])), 1):
+        keep = [l.strip() for l in body.splitlines() if re.match(r"(?i)\s*(name|spectator|team|countrycode|rank|accountid)=", l)]
+        out += [f"\t[PLAYER{n}]", "\t{"] + ["\t\t" + l for l in keep] + ["\t}"]
     # the replay's own allyteams (numbered densely): weapons can only aim at enemies. Nothing fires:
     # the gadget locks every weapon's reload. NullAI holds each team.
     allies = sorted({int(t[4]) for t in players})
