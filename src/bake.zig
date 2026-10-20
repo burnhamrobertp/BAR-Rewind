@@ -68,6 +68,8 @@ const Bake = struct {
     last_unit_frame: u32 = 0,
     meta: List(u8) = .empty,
     pieces_meta: List(u8) = .empty,
+    chat_meta: List(u8) = .empty,
+    markers_meta: List(u8) = .empty,
     /// per unit def: parent piece index (1-based, 0 = root) and original offset for each piece
     parents: std.AutoHashMapUnmanaged(u32, []const u32) = .empty,
     offsets: std.AutoHashMapUnmanaged(u32, []const [3]f32) = .empty,
@@ -286,6 +288,14 @@ fn addHeader(b: *Bake, line: []const u8) !void {
         try b.offsets.put(gpa, p.def, p.offsets);
         return;
     }
+    // one line per message or mark, collected into arrays
+    inline for (.{ .{ "\"chat\":", &b.chat_meta }, .{ "\"marker\":", &b.markers_meta } }) |pair| {
+        if (std.mem.startsWith(u8, inner, pair[0])) {
+            try pair[1].append(gpa, if (pair[1].items.len == 0) '[' else ',');
+            try pair[1].appendSlice(gpa, inner[pair[0].len..]);
+            return;
+        }
+    }
     if (std.mem.eql(u8, inner, "\"end\":true")) return;
     try b.meta.append(gpa, if (b.meta.items.len == 0) '{' else ',');
     try b.meta.appendSlice(gpa, inner);
@@ -351,6 +361,13 @@ pub fn main(init: std.process.Init) !void {
     if (b.pieces_meta.items.len > 0) try b.pieces_meta.append(gpa, ']') else try b.pieces_meta.appendSlice(gpa, "[]");
     try b.meta.appendSlice(gpa, if (b.meta.items.len == 0) "{\"pieces\":" else ",\"pieces\":");
     try b.meta.appendSlice(gpa, b.pieces_meta.items);
+    inline for (.{ .{ ",\"chat\":", &b.chat_meta }, .{ ",\"markers\":", &b.markers_meta } }) |pair| {
+        try b.meta.appendSlice(gpa, pair[0]);
+        if (pair[1].items.len > 0) {
+            try pair[1].append(gpa, ']');
+            try b.meta.appendSlice(gpa, pair[1].items);
+        } else try b.meta.appendSlice(gpa, "[]");
+    }
     try b.meta.append(gpa, '}');
 
     // deaths: gone at the sample after the last one it was seen in; seen in the last one = alive
@@ -495,6 +512,20 @@ fn isAny(name: []const u8, names: []const []const u8) bool {
     return false;
 }
 
+/// `s` as a double-quoted Lua string literal
+fn luaString(w: *std.Io.Writer, s: []const u8) !void {
+    try w.writeByte('"');
+    for (s) |c| switch (c) {
+        '"' => try w.writeAll("\\\""),
+        '\\' => try w.writeAll("\\\\"),
+        '\n' => try w.writeAll("\\n"),
+        '\r' => try w.writeAll("\\r"),
+        0...9, 11, 12, 14...31, 127 => try w.print("\\{d:0>3}", .{c}),
+        else => try w.writeByte(c),
+    };
+    try w.writeByte('"');
+}
+
 /// Writes `<name>_w<w>_<chunk>.bin` (keys) and `<name>_w<w>_index.bin` (u32 curve, first, count)
 /// for every window, and the Lua table describing them.
 fn writeWindows(
@@ -618,12 +649,29 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     // names instead of ids: the playing BAR version may number defs differently than the replay's
     const Named = struct { name: []const u8 = "" };
     const Team = struct { color: [3]f32 = .{ 1, 1, 1 }, ally: i32 = 0, leader: ?[]const u8 = null };
+    const Chat = struct { f: u32 = 0, name: []const u8 = "", team: i32 = -1, spec: bool = false, channel: []const u8 = "all", text: []const u8 = "" };
+    const Marker = struct {
+        f: u32 = 0,
+        name: []const u8 = "",
+        team: i32 = -1,
+        spec: bool = false,
+        @"type": []const u8 = "point",
+        x: f32 = 0,
+        y: f32 = 0,
+        z: f32 = 0,
+        x2: f32 = 0,
+        y2: f32 = 0,
+        z2: f32 = 0,
+        label: []const u8 = "",
+    };
     const Meta = struct {
         map: struct { name: []const u8 = "" } = .{},
         defs: std.json.ArrayHashMap(Named) = .{},
         fdefs: std.json.ArrayHashMap(Named) = .{},
         wdefs: std.json.ArrayHashMap(Named) = .{},
         teams: std.json.ArrayHashMap(Team) = .{},
+        chat: []const Chat = &.{},
+        markers: []const Marker = &.{},
     };
     const meta = try std.json.parseFromSliceLeaky(Meta, gpa, file.meta, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
     try w.print("  map = \"{s}\",\n", .{meta.map.name});
@@ -636,7 +684,27 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     for (meta.teams.map.keys(), meta.teams.map.values()) |id, team| {
         try w.print(" [{s}] = {{ color = {{ {d:.3}, {d:.3}, {d:.3} }}, ally = {d}, leader = \"{s}\" }},", .{ id, team.color[0], team.color[1], team.color[2], team.ally, team.leader orelse "" });
     }
-    try w.writeAll(" },\n}\n");
+    try w.writeAll(" },\n  chat = {\n");
+    for (meta.chat) |c| {
+        try w.print("    {{ f = {d}, team = {d}, spec = {}, channel = ", .{ c.f, c.team, c.spec });
+        try luaString(w, c.channel);
+        try w.writeAll(", name = ");
+        try luaString(w, c.name);
+        try w.writeAll(", text = ");
+        try luaString(w, c.text);
+        try w.writeAll(" },\n");
+    }
+    try w.writeAll("  },\n  markers = {\n");
+    for (meta.markers) |m| {
+        try w.print("    {{ f = {d}, team = {d}, spec = {}, type = ", .{ m.f, m.team, m.spec });
+        try luaString(w, m.@"type");
+        try w.writeAll(", name = ");
+        try luaString(w, m.name);
+        try w.print(", x = {d}, y = {d}, z = {d}, x2 = {d}, y2 = {d}, z2 = {d}, label = ", .{ m.x, m.y, m.z, m.x2, m.y2, m.z2 });
+        try luaString(w, m.label);
+        try w.writeAll(" },\n");
+    }
+    try w.writeAll("  },\n}\n");
     const meta_file = try dir.createFile(io, "meta.lua", .{});
     defer meta_file.close(io);
     try meta_file.writePositionalAll(io, lua.written(), 0);

@@ -62,7 +62,58 @@ local function json(v, depth)
 	return "{" .. concat(out, ",") .. "}"
 end
 
-local function line(key, value) file:write('{"', key, '":', json(value), "}\n") end
+local pending = {}
+
+local function line(key, value)
+	local text = '{"' .. key .. '":' .. json(value) .. "}\n"
+	if file then file:write(text) else pending[#pending + 1] = text end
+end
+
+-- chat and map marks ---------------------------------------------------------------------------
+-- The engine labels replayed chat "<name> text" for players and "[name (replay)] text" for
+-- spectators, with "Allies: " or "Spectators: " ahead of the text for those channels.
+
+-- engine log lines use the same "<source> text" shape, so only names of the replay's players count
+local function playerByName(name)
+	for _, id in ipairs(S.GetPlayerList()) do
+		local n, _, spec, team = S.GetPlayerInfo(id, false)
+		if n == name then return true, team, spec end
+	end
+
+	return false
+end
+
+function widget:AddConsoleLine(msg)
+	local name, text = msg:match("^<([^>]+)> (.*)")
+	if not name then
+		name, text = msg:match("^%[([^%]]+)%] (.*)")
+		if not name then return end
+		name = name:gsub(" %(replay%)$", "")
+	end
+	local channel = "all"
+	local rest = text:match("^Allies: (.*)")
+	if rest then channel, text = "allies", rest end
+	rest = text:match("^Spectators: (.*)")
+	if rest then channel, text = "spectators", rest end
+	local known, team, spec = playerByName(name)
+	if not known then return end
+	line("chat", { f = math.max(0, S.GetGameFrame()), name = name, team = team or -1, spec = spec or false,
+		channel = channel, text = text })
+end
+
+function widget:MapDrawCmd(playerID, cmdType, px, py, pz, a, b, c)
+	local name, _, spec, team = S.GetPlayerInfo(playerID, false)
+	local mark = { f = math.max(0, S.GetGameFrame()), name = name or "", team = team or -1, spec = spec or false,
+		type = cmdType, x = px, y = py, z = pz }
+	if cmdType == "point" then
+		mark.label = a or ""
+	elseif cmdType == "line" then
+		mark.x2, mark.y2, mark.z2 = a, b, c
+	elseif cmdType ~= "erase" then
+		return
+	end
+	line("marker", mark)
+end
 
 -- one-time headers -----------------------------------------------------------------------------
 
@@ -524,6 +575,8 @@ function widget:GameFrame(frame)
 		end
 		S.SendCommands("specfullview 1", "setminspeed 100", "setmaxspeed 100", "setspeed 100")
 		writeHeaders()
+		for i = 1, #pending do file:write(pending[i]) end
+		pending = {}
 		S.Echo("Replay Dump v2: recording to " .. path)
 		path = nil
 	end
