@@ -369,7 +369,6 @@ local function spawnUnit(i, r)
 		if #nano > 0 then Spring.SetUnitNanoPieces(u, nano) end
 	end
 	Spring.GiveOrderToUnit(u, CMD.FIRE_STATE, { 0 }, 0)
-	Spring.SetUnitAlwaysVisible(u, true)
 	if hiddenDefs[name] then
 		Spring.SetUnitNoDraw(u, true)
 		Spring.SetUnitNoSelect(u, true)
@@ -844,7 +843,6 @@ function gadget:GameFrame(frame)
 		started = true
 		-- the map spawned its own features; the curves own them from now on
 		for _, f in ipairs(Spring.GetAllFeatures()) do Spring.DestroyFeature(f) end
-		for _, ally in ipairs(Spring.GetAllyTeamList()) do Spring.SetGlobalLos(ally, true) end
 	end
 	-- shots keep playing a second past their frame: pausing clears projectiles in flight
 	if shot and t >= shot.frame + 30 then playing = false end
