@@ -29,8 +29,7 @@ local rowHeight = 22
 
 local playTex = ":l:" .. LUAUI_DIRNAME .. "Images/music/play.png"
 local pauseTex = ":l:" .. LUAUI_DIRNAME .. "Images/music/pause.png"
-local backTex = ":l:" .. LUAUI_DIRNAME .. "Images/backward.dds"
-local forwardTex = ":l:" .. LUAUI_DIRNAME .. "Images/forward.dds"
+local nextTex = ":l:" .. LUAUI_DIRNAME .. "Images/music/next.png"
 
 local vsx, vsy = spGetViewGeometry()
 local widgetScale = 1
@@ -199,11 +198,6 @@ function widget:DrawScreen()
 
 	UiElement(left, bottom, right, top, 1, 0, 0, 1, 1, 1, 0, 1, nil, nil, nil, nil)
 
-	local textures = {
-		back = backTex,
-		playpause = playing and pauseTex or playTex,
-		forward = forwardTex,
-	}
 	for _, name in ipairs(order) do
 		local b = buttons[name]
 		local active = playing and ((name == "back" and speed < 0) or (name == "forward" and speed > 0))
@@ -211,8 +205,16 @@ function widget:DrawScreen()
 			RectRound(b[1], b[2], b[3], b[4], (b[4] - b[2]) * 0.2, 1, 1, 1, 1, { 1, 1, 1, active and 0.18 or 0.1 })
 		end
 		glColor(1, 1, 1, 1)
-		glTexture(textures[name])
-		glTexRect(b[1] + padding2, b[2] + padding2, b[3] - padding2, b[4] - padding2)
+		if name == "playpause" then
+			glTexture(playing and pauseTex or playTex)
+			glTexRect(b[1] + padding2, b[2] + padding2, b[3] - padding2, b[4] - padding2)
+		else
+			-- the music player's skip icon, mirrored for rewind
+			glTexture(nextTex)
+			local s1, s2 = 0, 1
+			if name == "back" then s1, s2 = 1, 0 end
+			glTexRect(b[1] + padding2, b[2] + padding2, b[3] - padding2, b[4] - padding2, s1, 0, s2, 1)
+		end
 		glTexture(false)
 	end
 
@@ -224,7 +226,7 @@ function widget:DrawScreen()
 	font:Begin(true)
 	font:SetOutlineColor(0.15, 0.15, 0.15, 0.8)
 	font:Print(valueColor .. clock(t) .. titleColor .. " / " .. clock(last), textX, y, textsize, "no")
-	font:Print(titleColor .. (playing and "" or "paused ") .. valueColor .. speedText, right - 10 * widgetScale, y, textsize, "ron")
+	font:Print(valueColor .. speedText, right - 10 * widgetScale, y, textsize, "ron")
 	font:End()
 
 	drawSlider((t - first) / mathMax(last - first, 1))
