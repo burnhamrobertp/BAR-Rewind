@@ -348,7 +348,8 @@ def parse(cfg, demo):
 def engine_error(log):
     """The engine's own reason for quitting (its Fatal errorMsg), or None."""
     try:
-        hits = re.findall(r'errorMsg="([^"]*)"', Path(log).read_text(errors="replace"))
+        # the message quotes names itself, so it ends at the next field, not the next quote
+        hits = re.findall(r'errorMsg="(.*?)" msgCaption=', Path(log).read_text(errors="replace"))
     except OSError:
         return None
 
