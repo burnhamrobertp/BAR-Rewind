@@ -10,9 +10,9 @@ function widget:GetInfo()
 end
 
 -- Reads replay/meta.lua's markers list (written by `bake export-lua`), in sim-frame order, and
--- applies each once through the engine's marker API under the player who made it, so the marks,
--- BAR's ping effects and the chat notices are the game's own. Marks are history: a seek back
--- leaves what was already placed.
+-- applies each through the engine's marker API under the player who made it, so the marks, BAR's
+-- ping effects and the chat notices are the game's own. A seek back clears the map and replays
+-- the marks up to the new time.
 
 local M = VFS.Include("replay/meta.lua")
 local marks = M.markers or {}
@@ -32,6 +32,12 @@ local function apply(m)
 	end
 end
 
+local function clear()
+	Spring.SendCommands("clearmapmarks")
+	if Script.LuaUI("ClearMapMarks") then Script.LuaUI.ClearMapMarks() end
+	cursor = 1
+end
+
 function widget:Initialize()
 	if #marks == 0 then widgetHandler:RemoveWidget() end
 	for _, id in ipairs(Spring.GetPlayerList()) do
@@ -43,6 +49,7 @@ end
 function widget:Update()
 	local t = GetParam("replay_t")
 	if not t then return end
+	if cursor > 1 and marks[cursor - 1].f > t then clear() end
 	while cursor <= #marks and marks[cursor].f <= t do
 		apply(marks[cursor])
 		cursor = cursor + 1
