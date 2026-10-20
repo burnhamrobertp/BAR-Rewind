@@ -164,20 +164,28 @@ main { padding:20px 24px 100px; display:grid; grid-template-columns:repeat(auto-
 .players { color:var(--dim); margin:0; padding-left:18px; }
 .time { border:1px solid var(--line); border-radius:4px; padding:1px 6px; }
 .row { display:flex; gap:8px; align-items:center; margin-top:auto; padding-top:8px; }
-footer { position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--line); padding:12px 24px; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; }
+footer { position:fixed; bottom:0; left:0; right:0; z-index:10; background:#262b35; border-top:3px solid var(--line); box-shadow:0 -6px 24px rgba(0,0,0,.55); padding:14px 24px; display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center; font-size:15px; }
+footer.running { border-top-color:var(--accent); }
+footer.ok { border-top-color:var(--ok); }
+footer.failed { border-top-color:var(--bad); }
+footer .badge { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:4px 10px; border-radius:999px; background:var(--line); color:var(--text); white-space:nowrap; }
+footer.running .badge { background:var(--accent); color:#0b1520; }
+footer.ok .badge { background:var(--ok); color:#0b1a12; }
+footer.failed .badge { background:var(--bad); color:#1f0b0b; }
 footer .what { flex:1 1 320px; min-width:0; }
-footer .what b { margin-right:8px; }
-.bar { flex:1 1 200px; height:8px; background:var(--bg); border-radius:4px; overflow:hidden; }
-.bar div { height:100%; background:var(--accent); transition:width .5s; }
-.bar.idle div { background:var(--line); }
-.bar.failed div { background:var(--bad); }
-.bar.ok div { background:var(--ok); }
-.elapsed { color:var(--dim); font-variant-numeric:tabular-nums; min-width:5ch; text-align:right; }
-.error { color:var(--bad); white-space:pre-wrap; max-height:40vh; overflow:auto; font-family:monospace; }
+footer .what b { margin-right:10px; }
+.progress { flex:1 1 220px; height:12px; background:var(--bg); border-radius:6px; overflow:hidden; }
+.progress div { height:100%; width:0; background:var(--accent); transition:width .5s; }
+footer.idle .progress div { background:var(--line); }
+footer.ok .progress div { background:var(--ok); }
+footer.failed .progress div { background:var(--bad); }
+footer.running.waiting .progress div { width:100% !important; background:repeating-linear-gradient(-45deg, var(--accent) 0 12px, #3b7cc4 12px 24px); background-size:34px 100%; animation:crawl 1s linear infinite; }
+@keyframes crawl { to { background-position:34px 0; } }
+.elapsed { color:var(--text); font-variant-numeric:tabular-nums; min-width:5ch; text-align:right; }
 footer details { flex-basis:100%; }
 footer summary { color:var(--bad); cursor:pointer; }
 footer pre { margin:8px 0 0; max-height:30vh; overflow:auto; font-size:12px; color:var(--dim); white-space:pre-wrap; }
-main { padding-bottom:96px; }
+main { padding-bottom:120px; }
 .card.active { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
 .card .stage { color:var(--accent); font-size:12px; }
 button:disabled { opacity:.45; cursor:default; }
@@ -194,9 +202,10 @@ button:disabled { opacity:.45; cursor:default; }
   <span class="dim hint">Parsed replays (<code>curves/</code>), map previews and logs. Press Enter in either field to save; <span id="conf"></span></span>
 </header>
 <main id="list"></main>
-<footer id="job">
+<footer id="job" class="idle">
+  <span class="badge" id="badge">Ready</span>
   <div class="what"><b id="jobname">Ready</b><span id="jobtext" class="dim"></span></div>
-  <div class="bar idle" id="bar"><div id="pct"></div></div>
+  <div class="progress"><div id="pct"></div></div>
   <span class="elapsed" id="elapsed"></span>
   <button id="cancel" onclick="post('/api/cancel')" style="display:none">Cancel</button>
   <details id="joberr" style="display:none"><summary id="errhead"></summary><pre id="errlog"></pre></details>
@@ -263,7 +272,9 @@ $('list').onclick = async e => {
 async function poll() {
   const j = await (await fetch('/api/job')).json();
   if (!j.file) {
-    $('jobname').textContent = 'Ready';
+    $('job').className = 'idle';
+    $('badge').textContent = 'Ready';
+    $('jobname').textContent = 'Nothing running';
     $('jobtext').textContent = summary;
     $('elapsed').textContent = '';
     return;
@@ -276,7 +287,8 @@ async function poll() {
   $('jobtext').textContent = j.running ? j.text : failed ? (j.error.split('\n')[0]) : ({play: 'BAR closed', parse: 'parsed', download: 'downloaded'}[j.mode]) + ' · ' + summary;
   $('jobtext').className = failed ? 'error' : 'dim';
   $('pct').style.width = (j.running ? j.pct : 100) + '%';
-  $('bar').className = 'bar ' + (j.running ? '' : failed ? 'failed' : 'ok');
+  $('job').className = (j.running ? 'running' + (j.pct ? '' : ' waiting') : failed ? 'failed' : 'ok');
+  $('badge').textContent = j.running ? ({play: 'Playing', parse: 'Parsing', download: 'Downloading'}[j.mode]) : failed ? (j.error === 'cancelled' ? 'Cancelled' : 'Failed') : 'Done';
   $('elapsed').textContent = mmss(j.elapsed);
   $('cancel').style.display = j.running ? '' : 'none';
   $('joberr').style.display = failed ? '' : 'none';
