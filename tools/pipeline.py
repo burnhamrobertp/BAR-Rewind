@@ -58,7 +58,13 @@ def save_config(cfg):
     config_path().write_text(json.dumps(cfg, indent=2) + "\n")
 
 
-def engine_dir(bar):
+def engine_dir(bar, version=None):
+    if version:
+        exact = Path(bar, "engine", "recoil_" + version)
+        if exact.is_dir():
+            return exact
+        raise RuntimeError(f"engine {version} is not installed in {Path(bar, 'engine')}")
+
     return sorted(Path(bar, "engine").glob("recoil_*"))[-1]
 
 
@@ -90,6 +96,13 @@ def demo_load(path):
 def demo_script(path):
     b, head, script, _ = demo_load(path)
     return b[head:head + script].decode(errors="replace")
+
+
+# the engine refuses a demo recorded by any other version, so parse must run that exact build
+def demo_engine(path):
+    b = gzip.open(path).read(280)
+
+    return b[24:280].split(b"\0")[0].decode(errors="replace")
 
 
 def script_field(text, key):
@@ -152,7 +165,7 @@ def parse(cfg, demo):
         (bar / f).unlink(missing_ok=True)
     # the widget stops at the replay's last frame (an unfinished replay never reaches GameOver)
     (bar / "bardump.request").write_text(f"dump {total}\n")
-    engine = engine_dir(bar)
+    engine = engine_dir(bar, demo_engine(demo))
     headless = engine / ("spring-headless" + EXE)
     exe = headless if headless.exists() else engine / ("spring" + EXE)
     yield "progress", 0, f"loading BAR ({total // 1800} min of game)"
