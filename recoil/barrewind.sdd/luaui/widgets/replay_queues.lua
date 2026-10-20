@@ -60,6 +60,16 @@ end
 local shapes = {} -- [item index] = shape handle
 local last_refresh = nil
 
+-- as BAR's builder queue does: a queued building stops being a blueprint once a unit of its type
+-- stands on its spot (being built, or an upgrade replacing what was there)
+local function started(ud, x, z)
+	for _, u in ipairs(Spring.GetUnitsInCylinder(x, z, 16)) do
+		if Spring.GetUnitDefID(u) == ud.id then return true end
+	end
+
+	return false
+end
+
 local function refresh(t)
 	local want = {}
 	for unit, p in pairs(plans) do
@@ -69,7 +79,11 @@ local function refresh(t)
 			if p[j] <= t then k = j else break end
 		end
 		if k then
-			for i = p[k + 1], p[k + 1] + p[k + 2] - 1 do want[i] = unit end
+			for i = p[k + 1], p[k + 1] + p[k + 2] - 1 do
+				local def, x, z = item(i)
+				local ud = UnitDefNames[M.defs[def] or ""]
+				if ud and not started(ud, x, z) then want[i] = unit end
+			end
 		end
 	end
 	for i, shape in pairs(shapes) do
