@@ -766,7 +766,11 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     }
     try w.writeAll("  teams = {");
     for (meta.teams.map.keys(), meta.teams.map.values()) |id, team| {
-        try w.print(" [{s}] = {{ color = {{ {d}, {d}, {d} }}, ally = {d}, leader = \"{s}\" }},", .{ id, team.color[0], team.color[1], team.color[2], team.ally, team.leader orelse "" });
+        // BAR's colour codes take floor(c * 255) as a byte: the recording's colours were bytes, so
+        // each is put back on its byte, nudged up so the floor cannot land one below
+        var c: [3]f32 = undefined;
+        for (&c, team.color) |*o, v| o.* = (@round(std.math.clamp(v, 0, 1) * 255) + 0.1) / 255;
+        try w.print(" [{s}] = {{ color = {{ {d:.9}, {d:.9}, {d:.9} }}, ally = {d}, leader = \"{s}\" }},", .{ id, c[0], c[1], c[2], team.ally, team.leader orelse "" });
     }
     try w.writeAll(" },\n  chat = {\n");
     for (meta.chat) |c| {
