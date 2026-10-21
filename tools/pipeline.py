@@ -365,7 +365,12 @@ def parse(cfg, demo):
             tmp.with_suffix(suffix).unlink(missing_ok=True)
         if r.returncode != 0:
             curves.unlink(missing_ok=True)
-            raise RuntimeError(f"bake failed, see {log}")
+            # a negative code is the signal that ended it; the kernel's out-of-memory killer sends 9
+            how = (f"was killed by signal {-r.returncode}" + (", likely out of memory" if r.returncode == -9 else "")
+                   if r.returncode < 0 else f"exited with {r.returncode}")
+            with open(log, "a") as out:
+                out.write(f"bake {how}\n")
+            raise RuntimeError(f"bake {how}, see {log}")
     finally:
         (dump / "bardump.request").unlink(missing_ok=True)
         widget.unlink(missing_ok=True)
