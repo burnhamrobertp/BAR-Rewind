@@ -37,7 +37,7 @@ def replays():
         missing = pipeline.demo_missing(cfg["bar_data"], info, scanned)
         rows.append({"file": demo.name, "date": demo.name[:16].replace("_", " "), "map": info["map"],
                      "players": info["players"], "length": info["length"],
-                     "parsed": pipeline.curves_version(pipeline.curves_path(cfg, demo)) == version,
+                     "parsed": version is not None and pipeline.curves_version(pipeline.curves_path(cfg, demo)) == version,
                      "problem": pipeline.demo_problem(info), "warning": pipeline.demo_warning(info),
                      "missing": [f"{kind} {name}" for kind, name in missing]})
     return rows

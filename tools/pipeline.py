@@ -77,7 +77,11 @@ def bake_exe():
 
 
 def bake_version():
-    r = subprocess.run([str(bake_exe()), "version"], capture_output=True, text=True)
+    """The .curves version this bake writes, or None without a bake that says."""
+    try:
+        r = subprocess.run([str(bake_exe()), "version"], capture_output=True, text=True)
+    except SystemExit:
+        return None
     m = re.search(r"curves version (\d+)", r.stdout + r.stderr)
 
     return int(m.group(1)) if m else None
