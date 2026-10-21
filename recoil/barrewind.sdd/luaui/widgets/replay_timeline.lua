@@ -51,11 +51,7 @@ local function state()
 		(GetParam("replay_playing") or 0) == 1, GetParam("replay_speed") or 1
 end
 
-local function clock(frame)
-	local s = mathFloor(frame / 30)
-
-	return string.format("%d:%02d", mathFloor(s / 60), s % 60)
-end
+local clock = VFS.Include("LuaUI/replay_clock.lua")
 
 local function inRect(x, y, r)
 	return x >= r[1] and x <= r[3] and y >= r[2] and y <= r[4]

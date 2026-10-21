@@ -31,11 +31,7 @@ local POSITION_CHECK_INTERVAL = 0.05
 local font, elementCorner, RectRound, UiElement
 local guishaderList
 
-local function clock(frame)
-	local s = mathFloor(frame / 30)
-
-	return string.format("%d:%02d", mathFloor(s / 60), s % 60)
-end
+local clock = VFS.Include("LuaUI/replay_clock.lua")
 
 local function refreshGuishader()
 	if not WG.guishader then return end

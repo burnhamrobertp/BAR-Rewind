@@ -26,11 +26,7 @@ local shift = VFS.Include("LuaUI/replay_shift.lua")()
 
 local cursor = 1
 
-local function clock(frame)
-	local s = floor(frame / 30)
-
-	return string.format("%d:%02d", floor(s / 60), s % 60)
-end
+local clock = VFS.Include("LuaUI/replay_clock.lua")
 
 local function line(m)
 	local prefix = m.channel == "allies" and "Allies: " or m.channel == "spectators" and "Spectators: " or ""
