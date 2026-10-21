@@ -24,7 +24,7 @@ local glColor, glTexture, glTexRect = gl.Color, gl.Texture, gl.TexRect
 local MAX_SPEED = 64
 local KEY_SPACE, KEY_R = 32, 114
 local KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN = 276, 275, 273, 274
-local HEIGHT = 40 -- at UI scale 1
+local HEIGHT = 40
 -- time marks every this many seconds, the first that leaves room for its labels
 local MARK_STEPS = { 10, 30, 60, 120, 300, 600, 900, 1800, 3600 }
 

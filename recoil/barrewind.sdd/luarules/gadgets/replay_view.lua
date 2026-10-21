@@ -13,7 +13,7 @@ if gadgetHandler:IsSyncedCode() then return end
 
 -- Reads replay/cursor_* and replay/camera_* (written by `bake export-lua`) and hands them to LuaUI
 -- the way BAR's Cursor Broadcast and CameraBroadcast gadgets do, through the MouseCursorEvent and
--- CameraBroadcastEvent callins, so BAR's ally cursors and lock camera widgets show them as they
+-- CameraBroadcastEvent callins, so BAR's ally cursorTracks and lock camera widgets show them as they
 -- would live. Recoil's Lua numbers are 32-bit floats: records are read per chunk, never by a byte
 -- offset into all of them.
 
@@ -22,7 +22,8 @@ local U32, F32 = VFS.UnpackU32, VFS.UnpackF32
 local floor = math.floor
 local GetParam = Spring.GetGameRulesParam
 local GetTimer, DiffTimers = Spring.GetTimer, Spring.DiffTimers
-local CURSOR_EVERY = 0.1 -- seconds between cursor updates, about BAR's own broadcast rate
+-- about BAR's own cursor broadcast rate
+local CURSOR_SEND_SECONDS = 0.1
 
 local function chunks(name)
 	local s = M.sections[name]
@@ -57,9 +58,9 @@ do
 	for id, name in pairs(M.players or {}) do localId[id] = byName[name] end
 end
 
-local cursors = {} -- { player, first, count, at = cached key index }
-local cameras = {} -- [replay player] = list of camera key indices in time order
-local sentCamera = {} -- [replay player] = key index last sent, or false
+local cursorTracks = {}
+local cameraKeysByPlayer = {}
+local lastSentCameraKey = {}
 
 local function cursorKey(i)
 	local str, pos = at(cursorKeys, i)
@@ -73,15 +74,15 @@ local function load()
 		local str, pos = at(tracks, i)
 		local player = U32(str, pos)
 		if localId[player] and cursorKeys then
-			cursors[#cursors + 1] = { player = player, first = U32(str, pos + 4), count = U32(str, pos + 8), at = 0 }
+			cursorTracks[#cursorTracks + 1] = { player = player, first = U32(str, pos + 4), count = U32(str, pos + 8), at = 0 }
 		end
 	end
 	for i = 0, (cameraKeys and M.sections.camera_keys.count or 0) - 1 do
 		local str, pos = at(cameraKeys, i)
 		local player = U32(str, pos + 4)
 		if localId[player] then
-			cameras[player] = cameras[player] or {}
-			cameras[player][#cameras[player] + 1] = i
+			cameraKeysByPlayer[player] = cameraKeysByPlayer[player] or {}
+			cameraKeysByPlayer[player][#cameraKeysByPlayer[player] + 1] = i
 		end
 	end
 end
@@ -114,7 +115,7 @@ end
 
 local function sendCursors(t)
 	if not Script.LuaUI("MouseCursorEvent") then return end
-	for _, c in ipairs(cursors) do
+	for _, c in ipairs(cursorTracks) do
 		local first_t = cursorKey(c.first)
 		local last_t = cursorKey(c.first + c.count - 1)
 		if t >= first_t and t <= last_t then
@@ -138,7 +139,7 @@ end
 
 local function sendCameras(t)
 	if not Script.LuaUI("CameraBroadcastEvent") then return end
-	for player, list in pairs(cameras) do
+	for player, list in pairs(cameraKeysByPlayer) do
 		local a, b = 0, #list
 		while a < b do
 			local mid = floor((a + b + 1) / 2)
@@ -146,8 +147,8 @@ local function sendCameras(t)
 			if U32(str, pos) <= t then a = mid else b = mid - 1 end
 		end
 		local key = a > 0 and list[a] or false
-		if key ~= sentCamera[player] and seesCamera(player) then
-			sentCamera[player] = key
+		if key ~= lastSentCameraKey[player] and seesCamera(player) then
+			lastSentCameraKey[player] = key
 			Script.LuaUI.CameraBroadcastEvent(localId[player], key and cameraState(key) or nil)
 		end
 	end
@@ -157,14 +158,14 @@ local lastCursorSend = nil
 
 function gadget:Initialize()
 	load()
-	if #cursors == 0 and next(cameras) == nil then gadgetHandler:RemoveGadget() end
+	if #cursorTracks == 0 and next(cameraKeysByPlayer) == nil then gadgetHandler:RemoveGadget() end
 end
 
 function gadget:Update()
 	local t = GetParam("replay_t")
 	if not t then return end
 	local now = GetTimer()
-	if not lastCursorSend or DiffTimers(now, lastCursorSend) >= CURSOR_EVERY then
+	if not lastCursorSend or DiffTimers(now, lastCursorSend) >= CURSOR_SEND_SECONDS then
 		lastCursorSend = now
 		sendCursors(t)
 	end
