@@ -388,7 +388,14 @@ local function spawnUnit(i, r)
 	local frame = st ~= nil and st[3] < 1
 	local builder = frame and builderOf[r.id]
 	if frame and not (builder and Spring.ValidUnitID(builder) and Spring.GetUnitTeam(builder) == team) then
-		builder = Spring.GetTeamUnits(team)[1]
+		builder = nil
+		for _, other in ipairs(Spring.GetTeamUnits(team)) do
+			local ud = UnitDefs[Spring.GetUnitDefID(other) or 0]
+			if ud and ud.isBuilder then
+				builder = other
+				break
+			end
+		end
 	end
 	local u = CreateUnit(name, v[1], v[2], v[3], 0, team, frame, true, nil, frame and builder or nil)
 	if not u then return warnOnce("CreateUnit failed: " .. name .. " team " .. team) end
