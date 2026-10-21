@@ -11,8 +11,9 @@ end
 
 -- Reads replay/meta.lua's markers list (written by `bake export-lua`), in sim-frame order, and
 -- applies each through the engine's marker API under the player who made it, so the marks, BAR's
--- ping effects and the chat notices are the game's own. A seek back clears the map and replays
--- the marks up to the new time.
+-- ping effects and the chat notices are the game's own. Once a seek, drag or reverse playback is
+-- over, the map is cleared and only the marks still standing at the new time are placed again, so
+-- marks erased in between never fire their effects.
 
 local M = VFS.Include("replay/meta.lua")
 local marks = M.markers or {}
@@ -34,10 +35,38 @@ local function apply(m)
 	end
 end
 
+local ERASE_RADIUS2 = 100 * 100
+
 local function clear()
 	Spring.SendCommands("clearmapmarks")
 	if Script.LuaUI("ClearMapMarks") then Script.LuaUI.ClearMapMarks() end
 	cursor = 1
+end
+
+-- the engine's erase rule: marks within its radius made by the same side, spectator or player, a
+-- line counting by its first point
+local function erases(e, m)
+	local dx, dz = e.x - m.x, e.z - m.z
+
+	return m.spec == e.spec and dx * dx + dz * dz < ERASE_RADIUS2
+end
+
+-- clears the map and places the points and lines made before t that no erase before t removed
+local function rebuild(t)
+	clear()
+	local standing = {}
+	while cursor <= #marks and marks[cursor].f <= t do
+		local m = marks[cursor]
+		if m.type == "erase" then
+			for i = #standing, 1, -1 do
+				if erases(m, standing[i]) then table.remove(standing, i) end
+			end
+		else
+			standing[#standing + 1] = m
+		end
+		cursor = cursor + 1
+	end
+	for _, m in ipairs(standing) do apply(m) end
 end
 
 function widget:Initialize()
@@ -53,7 +82,7 @@ function widget:Update()
 	if not t then return end
 	local state = shift(t)
 	if state == "shifting" then return end
-	if state == "settled" and cursor > 1 and marks[cursor - 1].f > t then clear() end
+	if state == "settled" then rebuild(t) end
 	while cursor <= #marks and marks[cursor].f <= t do
 		apply(marks[cursor])
 		cursor = cursor + 1
