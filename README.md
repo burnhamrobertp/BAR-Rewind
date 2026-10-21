@@ -2,7 +2,7 @@
 ### (Prototype)
 Rewind, pause and scrub [Beyond All Reason](https://www.beyondallreason.info/) replays, rendered by BAR itself.
 
-**[Download v0.2.1](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.2.1)** (Linux and Windows)
+**[Download v0.3.0](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.3.0)** (Linux and Windows)
 
 ### Jump anywhere
 
@@ -27,7 +27,7 @@ Up/Down change the speed. At 64x a whole match unwinds in seconds.
 Needs BAR installed and [Python 3](https://www.python.org/downloads/) (Windows: tick "Add to PATH").
 
 1. Download `bar-rewind-linux.tar.gz` or `bar-rewind-windows.zip` from the
-   [release](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.2.1) and extract it.
+   [release](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.3.0) and extract it.
 2. Run `bar-rewind` (Linux) or `bar-rewind.bat` (Windows). The app opens in your **browser**.
 3. Check the **BAR data folder** at the top. It's usually found on its own; if not, paste it and press Enter.
    It's the folder BAR keeps its data in, with `engine/`, `maps/` and `demos/` inside, not the install folder:
@@ -47,10 +47,11 @@ Map previews of `.sd7` maps need [7-Zip](https://www.7-zip.org/) (`7z` on Linux)
 ### Just watching a parsed replay
 
 A `.curves` file holds everything playback needs, so watching one someone else parsed needs only BAR and
-the player (`bar-rewind.exe` on Windows, `bar-rewind` on Linux), no Python or app. Run it once: `.curves`
-files and Watch links on a BAR Rewind server then open with it (on Linux through a desktop entry in
-`~/.local/share/applications`, which needs `xdg-utils`). It puts the player in BAR's data folder and
-fetches the replay's engine, game and map when they're missing. `--uninstall` undoes the registration.
+the player (`bar-rewind.exe` on Windows, `bar-rewind-player-linux` on Linux), no Python or app. Run it
+once and `.curves` files open with it (on Linux through a desktop entry in `~/.local/share/applications`,
+which needs `xdg-utils`). It puts the player in BAR's data folder and fetches the replay's engine, game and
+map when they're missing. `--uninstall` undoes the registration. The release's player only plays local
+files: a BAR Rewind server hands out its own build, which also opens the server's Watch links.
 
 ## Build from source (custom install)
 
