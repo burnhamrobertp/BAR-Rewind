@@ -766,7 +766,7 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     }
     try w.writeAll("  teams = {");
     for (meta.teams.map.keys(), meta.teams.map.values()) |id, team| {
-        try w.print(" [{s}] = {{ color = {{ {d:.3}, {d:.3}, {d:.3} }}, ally = {d}, leader = \"{s}\" }},", .{ id, team.color[0], team.color[1], team.color[2], team.ally, team.leader orelse "" });
+        try w.print(" [{s}] = {{ color = {{ {d}, {d}, {d} }}, ally = {d}, leader = \"{s}\" }},", .{ id, team.color[0], team.color[1], team.color[2], team.ally, team.leader orelse "" });
     }
     try w.writeAll(" },\n  chat = {\n");
     for (meta.chat) |c| {
