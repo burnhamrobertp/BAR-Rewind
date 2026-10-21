@@ -3,7 +3,9 @@
 # Packs dist/bar-rewind-linux.tar.gz and dist/bar-rewind-windows.zip: bake built for that OS (baseline
 # x86_64, runs on any CPU), the Python app, the dump widget and the BAR Rewind mutator.
 # Users extract one and run bar-rewind (Linux) or bar-rewind.bat (Windows). Needs Python 3 and BAR.
-import io, shutil, subprocess, tarfile, time, zipfile
+# Also dist/bar-rewind.exe and dist/bar-rewind-player-linux: the player alone, all a viewer needs.
+# SERVER_HOST=<host> sets the only host the player downloads replays from.
+import io, os, shutil, subprocess, tarfile, time, zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,12 +20,13 @@ def mutator_files():
     return [p for p in src.rglob("*") if p.is_file() and "replay" not in p.relative_to(src).parts[:1]]
 
 
-def build_bake(target, name):
-    out = DIST / "stage" / name
-    out.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["zig", "build-exe", str(ROOT / "src/bake.zig"), "-OReleaseFast", "-target", target,
-                    "-mcpu=baseline", f"-femit-bin={out}"], check=True, cwd=DIST / "stage")
-    return out
+def build(target):
+    """The folder holding bake and bar-rewind built for `target`."""
+    prefix = DIST / "stage" / target
+    host = os.environ.get("SERVER_HOST")
+    subprocess.run(["zig", "build", f"-Dtarget={target}", "-Dcpu=baseline", "--prefix", str(prefix)]
+                   + ([f"-Dserver-host={host}"] if host else []), check=True, cwd=ROOT)
+    return prefix / "bin"
 
 
 def entries(bake, bake_name, launcher, launcher_text):
@@ -53,10 +56,12 @@ def pack_zip(path, items):
 
 
 DIST.mkdir(exist_ok=True)
-linux = build_bake("x86_64-linux-musl", "bake")
-pack_tar(DIST / "bar-rewind-linux.tar.gz", entries(linux, "bake", "bar-rewind", SH))
-windows = build_bake("x86_64-windows-gnu", "bake.exe")
-pack_zip(DIST / "bar-rewind-windows.zip", entries(windows, "bake.exe", "bar-rewind.bat", BAT))
+linux = build("x86_64-linux-musl")
+pack_tar(DIST / "bar-rewind-linux.tar.gz", entries(linux / "bake", "bake", "bar-rewind", SH))
+shutil.copy(linux / "bar-rewind", DIST / "bar-rewind-player-linux")
+windows = build("x86_64-windows-gnu")
+pack_zip(DIST / "bar-rewind-windows.zip", entries(windows / "bake.exe", "bake.exe", "bar-rewind.bat", BAT))
+shutil.copy(windows / "bar-rewind.exe", DIST / "bar-rewind.exe")
 shutil.rmtree(DIST / "stage")
-print(DIST / "bar-rewind-linux.tar.gz")
-print(DIST / "bar-rewind-windows.zip")
+for name in ("bar-rewind-linux.tar.gz", "bar-rewind-windows.zip", "bar-rewind.exe", "bar-rewind-player-linux"):
+    print(DIST / name)
