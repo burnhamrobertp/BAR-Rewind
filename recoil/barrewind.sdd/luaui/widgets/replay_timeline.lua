@@ -3,7 +3,7 @@ local widget = widget ---@type Widget
 function widget:GetInfo()
 	return {
 		name = "Replay Timeline",
-		desc = "BAR Rewind: play/pause, rewind, fast-forward and a scrub bar with time marks, along the bottom of the screen. Space play/pause, R reverse, Left/Right 10 s, Up/Down speed",
+		desc = "BAR Rewind: play/pause, rewind, fast-forward and a scrub bar with time marks, along the bottom of the screen. Space play/pause, R reverse; over the timeline, Left/Right 10 s and Up/Down speed",
 		author = "burnhamrobertp",
 		date = "2026-10-20",
 		license = "GNU GPL, v2 or later",
@@ -91,9 +91,9 @@ local function addTooltips()
 	if not WG.tooltip then return end
 	local keys = "\255\200\200\200"
 	local white = "\255\255\255\255"
-	WG.tooltip.AddTooltip("replay_back", buttons.back, "2x backwards, again to double\n" .. keys .. "R" .. white .. "  reverse direction\n" .. keys .. "Left" .. white .. "  skip back 10 s", nil, "Rewind")
-	WG.tooltip.AddTooltip("replay_playpause", buttons.playpause, "Play is 1x forward\n" .. keys .. "Space" .. white .. "  play / pause\n" .. keys .. "Up / Down" .. white .. "  double / halve speed", nil, "Play / Pause")
-	WG.tooltip.AddTooltip("replay_forward", buttons.forward, "2x forwards, again to double\n" .. keys .. "Right" .. white .. "  skip ahead 10 s", nil, "Fast forward")
+	WG.tooltip.AddTooltip("replay_back", buttons.back, "2x backwards, again to double\n" .. keys .. "R" .. white .. "  reverse direction\n" .. keys .. "Left" .. white .. "  skip back 10 s (over the timeline)", nil, "Rewind")
+	WG.tooltip.AddTooltip("replay_playpause", buttons.playpause, "Play is 1x forward\n" .. keys .. "Space" .. white .. "  play / pause\n" .. keys .. "Up / Down" .. white .. "  double / halve speed (over the timeline)", nil, "Play / Pause")
+	WG.tooltip.AddTooltip("replay_forward", buttons.forward, "2x forwards, again to double\n" .. keys .. "Right" .. white .. "  skip ahead 10 s (over the timeline)", nil, "Fast forward")
 	WG.tooltip.AddTooltip("replay_timeline", { slider[1], bottom, slider[3], top }, "Drag to seek", nil, "Timeline")
 end
 
@@ -319,6 +319,9 @@ end
 
 function widget:KeyPress(key)
 	if WG.chat and WG.chat.isInputActive and WG.chat.isInputActive() then return false end
+	-- the arrows scroll the camera everywhere else
+	local arrow = key == KEY_LEFT or key == KEY_RIGHT or key == KEY_UP or key == KEY_DOWN
+	if arrow and not widget:IsAbove(spGetMouseState()) then return false end
 	local t, _, _, playing, speed = state()
 	if key == KEY_SPACE then
 		Send(playing and "replay:pause" or "replay:play")

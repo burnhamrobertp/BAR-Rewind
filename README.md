@@ -36,8 +36,10 @@ Needs BAR installed and [Python 3](https://www.python.org/downloads/) (Windows: 
    - Windows: `%LOCALAPPDATA%\Programs\Beyond-All-Reason\data`
 4. Click **Parse** on a replay (a minute or more, depending on its length), then **Play**.
 
-In the player the game info panel under the player list becomes the replay's: time, speed, play/pause and
-rewind/fast-forward buttons, and a scrub bar to drag. Space play/pause, R reverse, Left/Right skip 10 s, Up/Down speed.
+In the player a timeline runs along the bottom of the screen: play/pause and rewind/fast-forward buttons,
+a scrub bar to drag with time marks under it, and the replay time and speed; the game info panel under the
+player list shows the replay time and speed too. Space play/pause, R reverse; with the mouse over the
+timeline, Left/Right skip 10 s and Up/Down change speed.
 The app quits on its own about 90 s after you close its browser tab.
 
 Map previews of `.sd7` maps need [7-Zip](https://www.7-zip.org/) (`7z` on Linux); everything else works without it.
@@ -57,8 +59,8 @@ zig build dist                       # dist/bar-rewind-linux.tar.gz and dist/bar
 - `src/bake.zig`, `src/curves.zig`: recording → `.curves` (keyframes thinned with Douglas–Peucker), and
   `bake export-lua`, which writes them in the form the player reads
 - `recoil/barrewind.sdd`: the BAR Rewind game (a mutator on top of BAR) that plays `.curves`: the
-  `replay_player` and `replay_eco` gadgets, the chat and map-mark widgets, and the game info panel
-  that stands in for BAR's as the timeline
+  `replay_player`, `replay_eco` and `replay_view` gadgets, the chat, map-mark and timeline widgets, and
+  the game info panel that stands in for BAR's
 - `tools/pipeline.py`: parse and play (also a CLI, see its header); `tools/ui.py`: the browser app
 
 ## How it works
