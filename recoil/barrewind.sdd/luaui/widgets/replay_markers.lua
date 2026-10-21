@@ -20,6 +20,12 @@ local AddPoint, AddLine, Erase = Spring.MarkerAddPoint, Spring.MarkerAddLine, Sp
 local GetParam = Spring.GetGameRulesParam
 local players = {}
 local cursor = 1
+local GetTimer, DiffTimers = Spring.GetTimer, Spring.DiffTimers
+-- as in Replay Chat: a seek, drag or reverse playback is over once time has moved only forward for
+-- SETTLE seconds, and only then is the map redrawn, once
+local JUMP, SETTLE = 600, 1
+local last_t = nil
+local shifting, went_back, last_jump = false, false, nil
 
 local function apply(m)
 	local player = players[m.name] or Spring.GetMyPlayerID()
@@ -49,7 +55,17 @@ end
 function widget:Update()
 	local t = GetParam("replay_t")
 	if not t then return end
-	if cursor > 1 and marks[cursor - 1].f > t then clear() end
+	if last_t and (t < last_t or t - last_t > JUMP) then
+		shifting, last_jump = true, GetTimer()
+		went_back = went_back or t < last_t
+	end
+	last_t = t
+	if shifting then
+		if DiffTimers(GetTimer(), last_jump) < SETTLE then return end
+		shifting = false
+		if went_back and cursor > 1 and marks[cursor - 1].f > t then clear() end
+		went_back = false
+	end
 	while cursor <= #marks and marks[cursor].f <= t do
 		apply(marks[cursor])
 		cursor = cursor + 1
