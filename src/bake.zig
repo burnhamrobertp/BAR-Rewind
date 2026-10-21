@@ -1,5 +1,7 @@
-//! bake <bardump.jsonl> <out.curves>
+//! bake <bardump.jsonl> <out.curves> <demo.sdfz>
 //! bake export-lua <in.curves> <dir>   (chunked sections + meta.lua for the Recoil player)
+//! bake start-script <in.curves> <out.txt>   (the player's start script)
+//! bake info <in.curves>   (engine, game and map, one key=value per line)
 //! Turns the dump widget's 10 Hz samples into ChronoCam curves: every entity becomes key lists
 //! simplified with Douglas-Peucker, then everything is written as flat arrays (see curves.zig).
 
@@ -392,14 +394,17 @@ pub fn main(init: std.process.Init) !void {
     const gpa = std.heap.smp_allocator;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len == 4 and std.mem.eql(u8, args[1], "export-lua")) return exportLua(io, gpa, args[2], args[3]);
+    if (args.len == 4 and std.mem.eql(u8, args[1], "start-script")) return writeStartScript(io, gpa, args[2], args[3]);
+    if (args.len == 3 and std.mem.eql(u8, args[1], "info")) return printInfo(io, gpa, args[2]);
     if (args.len == 2 and std.mem.eql(u8, args[1], "version")) {
         std.log.info("curves version {d}", .{curves.version});
         return;
     }
-    if (args.len != 3) {
-        std.log.err("usage: bake <bardump.jsonl> <out.curves> | bake export-lua <in.curves> <out-dir> | bake version", .{});
+    if (args.len != 4) {
+        std.log.err("usage: bake <bardump.jsonl> <out.curves> <demo.sdfz> | bake export-lua <in.curves> <out-dir> | bake start-script <in.curves> <out.txt> | bake info <in.curves> | bake version", .{});
         std.process.exit(2);
     }
+    const demo = try readDemo(io, gpa, args[3]);
 
     const text = try std.Io.Dir.cwd().readFileAlloc(io, args[1], gpa, .limited(16 << 30));
     var b: Bake = .{ .gpa = gpa };
@@ -435,6 +440,11 @@ pub fn main(init: std.process.Init) !void {
         error.FileNotFound => {},
         else => return err,
     }
+    const eco_path = try std.fmt.allocPrint(gpa, "{s}.eco.bin", .{stem});
+    const eco: []const u8 = std.Io.Dir.cwd().readFileAlloc(io, eco_path, gpa, .limited(1 << 30)) catch |err| switch (err) {
+        error.FileNotFound => "",
+        else => return err,
+    };
     if (b.pieces_meta.items.len > 0) try b.pieces_meta.append(gpa, ']') else try b.pieces_meta.appendSlice(gpa, "[]");
     try b.meta.appendSlice(gpa, if (b.meta.items.len == 0) "{\"pieces\":" else ",\"pieces\":");
     try b.meta.appendSlice(gpa, b.pieces_meta.items);
@@ -533,6 +543,7 @@ pub fn main(init: std.process.Init) !void {
         b.features.items, projectiles.items, projectile_keys.items, pose_keys.items, targets.items,
         b.terrain.items, queues.items, b.queue_items.items, team_keys.items,
         cursor_tracks.items, cursor_keys.items, camera_keys.items, camera_values.items,
+        demo.engine,     demo.script,      eco,
     };
     var offset: u64 = std.mem.alignForward(u64, @sizeOf(curves.Header), 16);
     inline for (sections, 0..) |items, i| {
@@ -683,8 +694,12 @@ fn quatTransforms(gpa: std.mem.Allocator, file: curves.File) ![]curves.Key(7) {
 }
 
 fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_dir: []const u8) !void {
-    const bytes = try std.Io.Dir.cwd().readFileAllocOptions(io, curves_path, gpa, .limited(16 << 30), .@"16", null);
-    const file = try curves.File.view(bytes);
+    try exportFile(io, gpa, try readCurves(io, gpa, curves_path), out_dir);
+    std.log.info("exported {s} to {s}", .{ curves_path, out_dir });
+}
+
+/// What the Recoil player reads from its replay/ folder
+pub fn exportFile(io: std.Io, gpa: std.mem.Allocator, file: curves.File, out_dir: []const u8) !void {
     var dir = try std.Io.Dir.cwd().createDirPathOpen(io, out_dir, .{});
     defer dir.close(io);
 
@@ -694,7 +709,7 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     inline for (curves.section_names, 0..) |name, s| {
         // the Recoil player needs poses, not the model-space matrices the Vulkan viewer uses;
         // per-unit key curves go out in time windows below
-        if (comptime isAny(name, &.{ "meta", "transforms", "statuses", "pose_keys", "targets" })) continue;
+        if (comptime isAny(name, &.{ "meta", "transforms", "statuses", "pose_keys", "targets", "engine", "demo_script", "eco" })) continue;
         const T = curves.SectionType(@enumFromInt(s));
         const items = @field(file, name);
         const per_chunk = chunk_bytes / @sizeOf(T);
@@ -727,37 +742,14 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     try writeWindows(curves.TargetKey, io, gpa, dir, w, "targets", file, file.targets, .units, 2, owner, windows);
     try w.writeAll("  },\n");
 
+    if (file.eco.len > 0) {
+        const eco = try dir.createFile(io, "eco.bin", .{});
+        defer eco.close(io);
+        try eco.writePositionalAll(io, file.eco, 0);
+    }
+
     // names instead of ids: the playing BAR version may number defs differently than the replay's
-    const Named = struct { name: []const u8 = "" };
-    const Team = struct { color: [3]f32 = .{ 1, 1, 1 }, ally: i32 = 0, leader: ?[]const u8 = null };
-    const Chat = struct { f: u32 = 0, name: []const u8 = "", team: i32 = -1, spec: bool = false, channel: []const u8 = "all", text: []const u8 = "", pre: bool = false };
-    const Marker = struct {
-        f: u32 = 0,
-        name: []const u8 = "",
-        team: i32 = -1,
-        spec: bool = false,
-        @"type": []const u8 = "point",
-        x: f32 = 0,
-        y: f32 = 0,
-        z: f32 = 0,
-        x2: f32 = 0,
-        y2: f32 = 0,
-        z2: f32 = 0,
-        label: []const u8 = "",
-    };
-    const Camera = struct { mode: i32 = -1, name: []const u8 = "", keys: []const []const u8 = &.{} };
-    const Meta = struct {
-        map: struct { name: []const u8 = "" } = .{},
-        defs: std.json.ArrayHashMap(Named) = .{},
-        fdefs: std.json.ArrayHashMap(Named) = .{},
-        wdefs: std.json.ArrayHashMap(Named) = .{},
-        teams: std.json.ArrayHashMap(Team) = .{},
-        chat: []const Chat = &.{},
-        markers: []const Marker = &.{},
-        players: std.json.ArrayHashMap([]const u8) = .{},
-        cameras: []const Camera = &.{},
-    };
-    const meta = try std.json.parseFromSliceLeaky(Meta, gpa, file.meta, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+    const meta = try parseMeta(gpa, file);
     try w.print("  map = \"{s}\",\n", .{meta.map.name});
     inline for (.{ .{ "defs", meta.defs }, .{ "fdefs", meta.fdefs }, .{ "wdefs", meta.wdefs } }) |pair| {
         try w.print("  {s} = {{", .{pair[0]});
@@ -766,10 +758,7 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     }
     try w.writeAll("  teams = {");
     for (meta.teams.map.keys(), meta.teams.map.values()) |id, team| {
-        // BAR's colour codes take floor(c * 255) as a byte: the recording's colours were bytes, so
-        // each is put back on its byte, nudged up so the floor cannot land one below
-        var c: [3]f32 = undefined;
-        for (&c, team.color) |*o, v| o.* = (@round(std.math.clamp(v, 0, 1) * 255) + 0.1) / 255;
+        const c = byteColor(team.color);
         try w.print(" [{s}] = {{ color = {{ {d:.9}, {d:.9}, {d:.9} }}, ally = {d}, leader = \"{s}\" }},", .{ id, c[0], c[1], c[2], team.ally, team.leader orelse "" });
     }
     try w.writeAll(" },\n  chat = {\n");
@@ -814,5 +803,199 @@ fn exportLua(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_di
     const meta_file = try dir.createFile(io, "meta.lua", .{});
     defer meta_file.close(io);
     try meta_file.writePositionalAll(io, lua.written(), 0);
-    std.log.info("exported {s} to {s}", .{ curves_path, out_dir });
+}
+
+const Named = struct { name: []const u8 = "" };
+const Team = struct { color: [3]f32 = .{ 1, 1, 1 }, ally: i32 = 0, leader: ?[]const u8 = null };
+const Chat = struct { f: u32 = 0, name: []const u8 = "", team: i32 = -1, spec: bool = false, channel: []const u8 = "all", text: []const u8 = "", pre: bool = false };
+const Marker = struct {
+    f: u32 = 0,
+    name: []const u8 = "",
+    team: i32 = -1,
+    spec: bool = false,
+    @"type": []const u8 = "point",
+    x: f32 = 0,
+    y: f32 = 0,
+    z: f32 = 0,
+    x2: f32 = 0,
+    y2: f32 = 0,
+    z2: f32 = 0,
+    label: []const u8 = "",
+};
+const Camera = struct { mode: i32 = -1, name: []const u8 = "", keys: []const []const u8 = &.{} };
+pub const Meta = struct {
+    map: struct { name: []const u8 = "" } = .{},
+    defs: std.json.ArrayHashMap(Named) = .{},
+    fdefs: std.json.ArrayHashMap(Named) = .{},
+    wdefs: std.json.ArrayHashMap(Named) = .{},
+    teams: std.json.ArrayHashMap(Team) = .{},
+    chat: []const Chat = &.{},
+    markers: []const Marker = &.{},
+    players: std.json.ArrayHashMap([]const u8) = .{},
+    cameras: []const Camera = &.{},
+};
+
+pub fn parseMeta(gpa: std.mem.Allocator, file: curves.File) !Meta {
+    return std.json.parseFromSliceLeaky(Meta, gpa, file.meta, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+}
+
+/// BAR's colour codes take floor(c * 255) as a byte: the recording's colours were bytes, so each
+/// is put back on its byte, nudged up so the floor cannot land one below
+fn byteColor(color: [3]f32) [3]f32 {
+    var c: [3]f32 = undefined;
+    for (&c, color) |*o, v| o.* = (@round(std.math.clamp(v, 0, 1) * 255) + 0.1) / 255;
+
+    return c;
+}
+
+pub fn readCurves(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !curves.File {
+    const bytes = try std.Io.Dir.cwd().readFileAllocOptions(io, path, gpa, .limited(16 << 30), .@"16", null);
+
+    return curves.File.view(bytes);
+}
+
+// the match's demo and start script --------------------------------------------------------------
+
+const Demo = struct { engine: []const u8, script: []const u8 };
+
+/// A demo (.sdfz) is gzip around a header (its length at 20, the engine version at 24, the start
+/// script's length at 304), the start script, then the packet stream.
+fn readDemo(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !Demo {
+    const compressed = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 30));
+    defer gpa.free(compressed);
+    var in: std.Io.Reader = .fixed(compressed);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var gz: std.compress.flate.Decompress = .init(&in, .gzip, &window);
+    const bytes = try gz.reader.allocRemaining(gpa, .limited(4 << 30));
+    if (bytes.len < 312) return error.BadDemo;
+    const head: usize = @intCast(std.mem.readInt(i32, bytes[20..24], .little));
+    const script_len: usize = @intCast(std.mem.readInt(i32, bytes[304..308], .little));
+    if (head + script_len > bytes.len) return error.BadDemo;
+
+    return .{ .engine = std.mem.sliceTo(bytes[24..280], 0), .script = bytes[head..][0..script_len] };
+}
+
+/// `[name] { body }` in a start script whose body holds no block of its own
+const Block = struct { name: []const u8, body: []const u8 };
+
+fn flatBlocks(gpa: std.mem.Allocator, script: []const u8) ![]Block {
+    var out: List(Block) = .empty;
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, script, i, '[')) |open| {
+        const close = std.mem.indexOfScalarPos(u8, script, open, ']') orelse break;
+        i = close + 1;
+        var brace = close + 1;
+        while (brace < script.len and std.ascii.isWhitespace(script[brace])) brace += 1;
+        if (brace >= script.len or script[brace] != '{') continue;
+        const end = std.mem.indexOfAnyPos(u8, script, brace + 1, "{}") orelse break;
+        if (script[end] == '{') continue;
+        try out.append(gpa, .{ .name = script[open + 1 .. close], .body = script[brace + 1 .. end] });
+        i = end + 1;
+    }
+
+    return out.items;
+}
+
+fn writeBlockLines(w: *std.Io.Writer, body: []const u8, keys: ?[]const []const u8) !void {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        if (keys) |wanted| {
+            const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            var known = false;
+            for (wanted) |k| known = known or std.ascii.eqlIgnoreCase(line[0..eq], k);
+            if (!known) continue;
+        }
+        try w.print("\t\t{s}\n", .{line});
+    }
+}
+
+/// The value of the first `key=value;` line in a start script, or ""
+pub fn scriptField(script: []const u8, key: []const u8) []const u8 {
+    var lines = std.mem.splitScalar(u8, script, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimStart(u8, raw, " \t\r");
+        if (line.len <= key.len or !std.ascii.startsWithIgnoreCase(line, key) or line[key.len] != '=') continue;
+        const value = line[key.len + 1 ..];
+
+        return value[0 .. std.mem.indexOfAny(u8, value, ";\r") orelse value.len];
+    }
+
+    return "";
+}
+
+fn byFirst(_: void, a: [2]i64, b: [2]i64) bool {
+    return a[0] < b[0];
+}
+
+/// BAR start script for a local spectator game with the replay's map, teams and options
+pub fn startScript(w: *std.Io.Writer, gpa: std.mem.Allocator, meta: Meta, script: []const u8) !void {
+    try w.print("[GAME]\n{{\n\tMapName={s};\n\tGameType=BAR Rewind dev;\n\tIsHost=1;\n\tOnlyLocal=1;\n" ++
+        "\tMyPlayerName=viewer;\n\tStartPosType=0;\n\tRecordDemo=0;\n\t[PLAYER0]\n\t{{\n\t\tName=viewer;\n\t\tSpectator=1;\n\t}}\n", .{meta.map.name});
+
+    // the match's players, who never connect: BAR's chat and map marks only show players it knows
+    const blocks = try flatBlocks(gpa, script);
+    var players: List([2]i64) = .empty;
+    for (blocks, 0..) |block, i| {
+        if (block.name.len <= "player".len or !std.ascii.startsWithIgnoreCase(block.name, "player")) continue;
+        const n = std.fmt.parseInt(u32, block.name["player".len..], 10) catch continue;
+        try players.append(gpa, .{ n, @intCast(i) });
+    }
+    std.mem.sort([2]i64, players.items, {}, byFirst);
+    const player_keys = [_][]const u8{ "name", "spectator", "team", "countrycode", "rank", "accountid" };
+    for (players.items, 1..) |p, n| {
+        try w.print("\t[PLAYER{d}]\n\t{{\n", .{n});
+        try writeBlockLines(w, blocks[@intCast(p[1])].body, &player_keys);
+        try w.writeAll("\t}\n");
+    }
+
+    // the replay's own allyteams (numbered densely): weapons can only aim at enemies. Nothing
+    // fires: the gadget locks every weapon's reload. NullAI holds each team; the highest is Gaia.
+    var teams: List([2]i64) = .empty;
+    for (meta.teams.map.keys(), 0..) |id, i| try teams.append(gpa, .{ try std.fmt.parseInt(i64, id, 10), @intCast(i) });
+    std.mem.sort([2]i64, teams.items, {}, byFirst);
+    if (teams.items.len > 0) teams.items.len -= 1;
+    var allies: List(i32) = .empty;
+    for (teams.items) |t| {
+        const ally = meta.teams.map.values()[@intCast(t[1])].ally;
+        if (std.mem.indexOfScalar(i32, allies.items, ally) == null) try allies.append(gpa, ally);
+    }
+    std.mem.sort(i32, allies.items, {}, std.sort.asc(i32));
+    for (teams.items) |t| {
+        const team = meta.teams.map.values()[@intCast(t[1])];
+        const c = byteColor(team.color);
+        const ally = std.mem.indexOfScalar(i32, allies.items, team.ally).?;
+        try w.print("\t[TEAM{d}]\n\t{{\n\t\tTeamLeader=0;\n\t\tAllyTeam={d};\n\t\tRGBColor={d:.9} {d:.9} {d:.9};\n\t}}\n", .{ t[0], ally, c[0], c[1], c[2] });
+        try w.print("\t[AI{d}]\n\t{{\n\t\tShortName=NullAI;\n\t\tTeam={d};\n\t\tHost=0;\n\t\tName=team{d};\n\t}}\n", .{ t[0], t[0], t[0] });
+    }
+    for (0..allies.items.len) |i| try w.print("\t[ALLYTEAM{d}]\n\t{{\n\t}}\n", .{i});
+
+    inline for (.{ .{ "modoptions", "MODOPTIONS" }, .{ "mapoptions", "MAPOPTIONS" } }) |pair| {
+        try w.print("\t[{s}]\n\t{{\n", .{pair[1]});
+        for (blocks) |block| if (std.ascii.eqlIgnoreCase(block.name, pair[0])) {
+            try writeBlockLines(w, block.body, null);
+            break;
+        };
+        try w.writeAll("\t}\n");
+    }
+    try w.writeAll("}\n");
+}
+
+fn writeStartScript(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8, out_path: []const u8) !void {
+    const file = try readCurves(io, gpa, curves_path);
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    try startScript(&text.writer, gpa, try parseMeta(gpa, file), file.demo_script);
+    const out = try std.Io.Dir.cwd().createFile(io, out_path, .{});
+    defer out.close(io);
+    try out.writePositionalAll(io, text.written(), 0);
+}
+
+fn printInfo(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8) !void {
+    const file = try readCurves(io, gpa, curves_path);
+    const meta = try parseMeta(gpa, file);
+    var buffer: [4096]u8 = undefined;
+    var out = std.Io.File.stdout().writerStreaming(io, &buffer);
+    try out.interface.print("engine={s}\ngame={s}\nmap={s}\n", .{ file.engine, scriptField(file.demo_script, "gametype"), meta.map.name });
+    try out.interface.flush();
 }

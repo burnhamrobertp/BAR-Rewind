@@ -13,7 +13,7 @@ end
 -- bardump_eco.bin: "BBEC", u32 version, u32 frames per sample, u32 fields per team, u32 team count,
 -- u32 team ids, then rows of f32: frame, then per team metal (level, storage, pull, income, expense)
 -- and energy (the same five). Income, expense and pull are the engine's per-second figures, what
--- BAR's top bar shows. pipeline.py moves the file next to the .curves as <demo>.eco.bin.
+-- BAR's top bar shows. bake stores it in the .curves.
 
 -- BAR confines user widgets to reading LuaUI/ and writing LuaUI/Config/ (bar-game #9547)
 local REQUEST, OUT = "LuaUI/Config/bardump.request", "LuaUI/Config/bardump_eco.bin"

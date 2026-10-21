@@ -16,7 +16,7 @@ WINDOWS = os.name == "nt"
 EXE = ".exe" if WINDOWS else ""
 MUTATOR = ROOT / "recoil" / "barrewind.sdd"
 WIDGET = ROOT / "lua" / "dump_replay.lua"
-WIDGET_ECO = ROOT / "lua" / "dump_replay_eco.lua"  # every team's resources once a second -> <name>.eco.bin
+WIDGET_ECO = ROOT / "lua" / "dump_replay_eco.lua"  # every team's resources once a second
 
 
 # settings ----------------------------------------------------------------------------------------
@@ -285,8 +285,13 @@ def curves_path(cfg, demo):
     return Path(cfg["out_dir"], "curves", Path(demo).stem + ".curves")
 
 
-def eco_path(cfg, demo):
-    return Path(cfg["out_dir"], "curves", Path(demo).stem + ".eco.bin")
+def curves_info(curves):
+    """{engine, game, map} of a parsed replay."""
+    r = subprocess.run([str(bake_exe()), "info", str(curves)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"cannot read {curves}: " + r.stderr)
+
+    return dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
 
 
 def parse(cfg, demo):
@@ -350,19 +355,17 @@ def parse(cfg, demo):
         tmp = curves.with_suffix(".jsonl")
         shutil.move(dump / "bardump.jsonl", tmp)
         shutil.move(dump / "bardump.bin", tmp.with_suffix(".bin"))
-        if (dump / "bardump_view.bin").exists():
-            shutil.move(dump / "bardump_view.bin", tmp.with_suffix(".view.bin"))
-        r = subprocess.run([str(bake_exe()), str(tmp), str(curves)], capture_output=True, text=True)
+        for name, suffix in (("bardump_view.bin", ".view.bin"), ("bardump_eco.bin", ".eco.bin")):
+            if (dump / name).exists():
+                shutil.move(dump / name, tmp.with_suffix(suffix))
+        r = subprocess.run([str(bake_exe()), str(tmp), str(curves), str(demo)], capture_output=True, text=True)
         with open(log, "a") as out:
             out.write(r.stdout + r.stderr)
-        tmp.unlink(missing_ok=True)
-        tmp.with_suffix(".bin").unlink(missing_ok=True)
-        tmp.with_suffix(".view.bin").unlink(missing_ok=True)
+        for suffix in (".jsonl", ".bin", ".view.bin", ".eco.bin"):
+            tmp.with_suffix(suffix).unlink(missing_ok=True)
         if r.returncode != 0:
             curves.unlink(missing_ok=True)
             raise RuntimeError(f"bake failed, see {log}")
-        if (dump / "bardump_eco.bin").exists():
-            shutil.move(dump / "bardump_eco.bin", eco_path(cfg, demo))
     finally:
         (dump / "bardump.request").unlink(missing_ok=True)
         widget.unlink(missing_ok=True)
@@ -422,35 +425,6 @@ def newest_game(bar):
     raise RuntimeError("no BAR game installed (no byar:test in rapid versions)")
 
 
-def start_script(meta, replay_script):
-    """BAR start script for a local spectator game with the replay's map, teams and options."""
-    def section(name):
-        m = re.search(r"(?is)\[" + name + r"\]\s*\{(.*?)\}", replay_script)
-        return ["\t\t" + l.strip() for l in (m.group(1) if m else "").splitlines() if l.strip()]
-    mapname = re.search(r'map = "([^"]*)"', meta).group(1)
-    teams = re.findall(r'\[(\d+)\] = \{ color = \{ ([\d.]+), ([\d.]+), ([\d.]+) \}, ally = (-?\d+)', meta)
-    ids = sorted(int(t[0]) for t in teams)
-    players = [t for t in teams if int(t[0]) != ids[-1]]  # highest team is Gaia
-    out = ["[GAME]", "{", f"\tMapName={mapname};", "\tGameType=BAR Rewind dev;", "\tIsHost=1;", "\tOnlyLocal=1;",
-           "\tMyPlayerName=viewer;", "\tStartPosType=0;", "\tRecordDemo=0;",
-           "\t[PLAYER0]", "\t{", "\t\tName=viewer;", "\t\tSpectator=1;", "\t}"]
-    # the match's players, who never connect: BAR's chat and map marks only show players it knows
-    for n, (_, body) in enumerate(sorted(re.findall(r"(?is)\[player(\d+)\]\s*\{([^{}]*)\}", replay_script), key=lambda p: int(p[0])), 1):
-        keep = [l.strip() for l in body.splitlines() if re.match(r"(?i)\s*(name|spectator|team|countrycode|rank|accountid)=", l)]
-        out += [f"\t[PLAYER{n}]", "\t{"] + ["\t\t" + l for l in keep] + ["\t}"]
-    # the replay's own allyteams (numbered densely): weapons can only aim at enemies. Nothing fires:
-    # the gadget locks every weapon's reload. NullAI holds each team.
-    allies = sorted({int(t[4]) for t in players})
-    for tid, r, g, b, ally in sorted(players, key=lambda t: int(t[0])):
-        out += [f"\t[TEAM{tid}]", "\t{", "\t\tTeamLeader=0;", f"\t\tAllyTeam={allies.index(int(ally))};",
-                f"\t\tRGBColor={r} {g} {b};", "\t}",
-                f"\t[AI{tid}]", "\t{", "\t\tShortName=NullAI;", f"\t\tTeam={tid};", "\t\tHost=0;", f"\t\tName=team{tid};", "\t}"]
-    for i in range(len(allies)):
-        out += [f"\t[ALLYTEAM{i}]", "\t{", "\t}"]
-    out += ["\t[MODOPTIONS]", "\t{"] + section("modoptions") + ["\t}", "\t[MAPOPTIONS]", "\t{"] + section("mapoptions") + ["\t}", "}"]
-    return "\n".join(out) + "\n"
-
-
 def lua_value(v):
     if isinstance(v, bool):
         return "true" if v else "false"
@@ -468,6 +442,7 @@ def play(cfg, demo, shot=None):
     {"camera": json path, "png": out path} plays shot mode. The engine's output goes to <out>/play.log."""
     bar, out_dir, curves = Path(cfg["bar_data"]), Path(cfg["out_dir"]), curves_path(cfg, demo)
     out_dir.mkdir(parents=True, exist_ok=True)
+    info = curves_info(curves)
     # a copy, not a link: Windows needs admin rights for symlinks
     game = bar / "games" / MUTATOR.name
     if game.is_symlink() or game.is_file():
@@ -478,18 +453,13 @@ def play(cfg, demo, shot=None):
     r = subprocess.run([str(bake_exe()), "export-lua", str(curves), str(game / "replay")], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("export failed: " + r.stdout + r.stderr)
-    # the economy recording, if the replay was parsed with it; without it the top bar shows what the replayed
-    # units produce, which is not the match's economy
-    if eco_path(cfg, demo).exists():
-        shutil.copy(eco_path(cfg, demo), game / "replay" / "eco.bin")
-    # the replay's own start script gives the game version and options it ran with
-    replay_script = demo_script(demo)
-    gametype = script_field(replay_script, "gametype")
-    version = gametype if gametype != "?" and not gametype.startswith("BAR Rewind") else newest_game(bar)
+    version = info["game"] if info["game"] and not info["game"].startswith("BAR Rewind") else newest_game(bar)
     modinfo = game / "modinfo.lua"
     modinfo.write_text(re.sub(r"depend = \{.*\}", f'depend = {{ "{version}" }}', modinfo.read_text()))
     play_script = out_dir / "play_script.txt"
-    play_script.write_text(start_script((game / "replay" / "meta.lua").read_text(), replay_script))
+    r = subprocess.run([str(bake_exe()), "start-script", str(curves), str(play_script)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("start script failed: " + r.stdout + r.stderr)
     if shot:
         cam = json.loads(Path(shot["camera"]).read_text())
         extra = "".join(f", {k} = {lua_value(conv(os.environ[env]))}" for k, env, conv in (
@@ -499,7 +469,7 @@ def play(cfg, demo, shot=None):
     log = open(out_dir / "play.log", "w")
     # the replay's own engine, as the parse uses: newer engines draw nano spray natively, only for units that
     # really build, so BAR's Lua nano gadget (which the player feeds) stands down and no spray shows
-    return subprocess.Popen([str(engine_dir(bar, demo_engine(demo)) / ("spring" + EXE)), "--write-dir", str(bar), "--isolation",
+    return subprocess.Popen([str(engine_dir(bar, info["engine"]) / ("spring" + EXE)), "--write-dir", str(bar), "--isolation",
                              "--window", str(play_script)], stdout=log, stderr=subprocess.STDOUT, **new_group())
 
 

@@ -12,7 +12,7 @@ end
 
 if not gadgetHandler:IsSyncedCode() then return end
 
--- replay/eco.bin is written by lua/dump_replay_eco.lua during the parse (the layout is described there).
+-- replay/eco.bin is what lua/dump_replay_eco.lua recorded during the parse (the layout is described there).
 -- The engine turns what AddTeamResource / UseTeamResource / UseUnitResource moved during the last
 -- 30 frames into the per-second income, expense and pull that BAR's top bar shows (Team.cpp
 -- ResetResourceState, run after the gadgets' GameFrame), so each frame this gadget moves 1/30 of the

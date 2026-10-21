@@ -4,7 +4,7 @@
 const std = @import("std");
 
 pub const magic = "BRC1".*;
-pub const version = 9;
+pub const version = 10;
 pub const alive_forever = std.math.maxInt(u32);
 
 pub fn Key(comptime n: usize) type {
@@ -129,7 +129,7 @@ pub const CameraKey = extern struct {
     values: Span,
 };
 
-pub const Section = enum(u32) { meta, units, transforms, statuses, tracks, features, projectiles, projectile_keys, pose_keys, targets, terrain, queues, queue_items, team_keys, cursor_tracks, cursor_keys, camera_keys, camera_values };
+pub const Section = enum(u32) { meta, units, transforms, statuses, tracks, features, projectiles, projectile_keys, pose_keys, targets, terrain, queues, queue_items, team_keys, cursor_tracks, cursor_keys, camera_keys, camera_values, engine, demo_script, eco };
 pub const section_names = @typeInfo(Section).@"enum".field_names;
 pub const section_count = section_names.len;
 
@@ -153,6 +153,7 @@ pub fn SectionType(comptime s: Section) type {
         .cursor_keys => CursorKey,
         .camera_keys => CameraKey,
         .camera_values => f32,
+        .engine, .demo_script, .eco => u8,
     };
 }
 
@@ -187,6 +188,12 @@ pub const File = struct {
     cursor_keys: []const CursorKey,
     camera_keys: []const CameraKey,
     camera_values: []const f32,
+    /// the Recoil version that recorded the match: playback runs on that exact build
+    engine: []const u8,
+    /// the match's own start script, as its demo holds it
+    demo_script: []const u8,
+    /// what lua/dump_replay_eco.lua recorded, or empty
+    eco: []const u8,
 
     pub fn view(bytes: []align(16) const u8) error{BadCurves}!File {
         if (bytes.len < @sizeOf(Header)) return error.BadCurves;
