@@ -1,6 +1,6 @@
 //! bar-rewind: plays BAR Rewind replays (.curves) in an installed BAR. It finds BAR's data folder,
 //! puts the BAR Rewind mutator in it, and fetches the replay's engine, game and map when missing.
-//!   bar-rewind                              register barrewind:// links and .curves files (Windows)
+//!   bar-rewind                              register barrewind:// links and .curves files for this user
 //!   bar-rewind <replay.curves>              play a replay
 //!   bar-rewind barrewind://play?url=<url>   download a replay from the BAR Rewind server, then play it
 //!   bar-rewind --uninstall                  remove the registration
@@ -68,42 +68,98 @@ fn exists(ctx: Ctx, path: []const u8) bool {
 // registration ------------------------------------------------------------------------------------
 
 fn register(ctx: Ctx, install: bool) !void {
-    if (!windows) return fail(ctx, "registering links is Windows-only for now: run bar-rewind <replay.curves>", .{});
-    const classes = "HKCU\\Software\\Classes\\";
+    if (windows) try registerWindows(ctx, install) else try registerFreedesktop(ctx, install);
     if (!install) {
-        inline for (.{ "barrewind", ".curves", "BARRewind.curves" }) |key| _ = try reg(ctx, &.{ "delete", classes ++ key, "/f" });
         std.debug.print("BAR Rewind: barrewind:// links and .curves files no longer open with this bar-rewind.\n", .{});
         pause(ctx);
         return;
     }
 
-    const exe = try std.process.executablePathAlloc(ctx.io, ctx.gpa);
-    const command = try std.fmt.allocPrint(ctx.gpa, "\"{s}\" \"%1\"", .{exe});
-    const writes = [_][]const []const u8{
-        &.{ "add", classes ++ "barrewind", "/ve", "/d", "URL:BAR Rewind", "/f" },
-        &.{ "add", classes ++ "barrewind", "/v", "URL Protocol", "/d", "", "/f" },
-        &.{ "add", classes ++ "barrewind\\shell\\open\\command", "/ve", "/d", command, "/f" },
-        &.{ "add", classes ++ ".curves", "/ve", "/d", "BARRewind.curves", "/f" },
-        &.{ "add", classes ++ "BARRewind.curves", "/ve", "/d", "BAR Rewind replay", "/f" },
-        &.{ "add", classes ++ "BARRewind.curves\\shell\\open\\command", "/ve", "/d", command, "/f" },
-    };
-    for (writes) |w| if (!try reg(ctx, w)) return fail(ctx, "could not register with Windows (reg {s} {s})", .{ w[0], w[1] });
-    const bar = try barData(ctx);
+    const bar = barData(ctx) catch failure orelse "not found";
     std.debug.print(
         \\BAR Rewind is set up.
         \\  Watch links on the BAR Rewind site and .curves files now open with {s}
         \\  (keep it where it is, or run it again after moving it).
         \\  BAR's data folder: {s}
         \\
-    , .{ exe, bar });
+    , .{ try std.process.executablePathAlloc(ctx.io, ctx.gpa), bar });
     pause(ctx);
 }
 
-fn reg(ctx: Ctx, args: []const []const u8) !bool {
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.append(ctx.gpa, "reg");
-    try argv.appendSlice(ctx.gpa, args);
-    const r = try std.process.run(ctx.gpa, ctx.io, .{ .argv = argv.items });
+fn registerWindows(ctx: Ctx, install: bool) !void {
+    const classes = "HKCU\\Software\\Classes\\";
+    if (!install) {
+        inline for (.{ "barrewind", ".curves", "BARRewind.curves" }) |key| _ = succeeds(ctx, &.{ "reg", "delete", classes ++ key, "/f" });
+        return;
+    }
+
+    const exe = try std.process.executablePathAlloc(ctx.io, ctx.gpa);
+    const command = try std.fmt.allocPrint(ctx.gpa, "\"{s}\" \"%1\"", .{exe});
+    const writes = [_][]const []const u8{
+        &.{ "reg", "add", classes ++ "barrewind", "/ve", "/d", "URL:BAR Rewind", "/f" },
+        &.{ "reg", "add", classes ++ "barrewind", "/v", "URL Protocol", "/d", "", "/f" },
+        &.{ "reg", "add", classes ++ "barrewind\\shell\\open\\command", "/ve", "/d", command, "/f" },
+        &.{ "reg", "add", classes ++ ".curves", "/ve", "/d", "BARRewind.curves", "/f" },
+        &.{ "reg", "add", classes ++ "BARRewind.curves", "/ve", "/d", "BAR Rewind replay", "/f" },
+        &.{ "reg", "add", classes ++ "BARRewind.curves\\shell\\open\\command", "/ve", "/d", command, "/f" },
+    };
+    for (writes) |w| if (!succeeds(ctx, w)) return fail(ctx, "could not register with Windows (reg add {s})", .{w[2]});
+}
+
+const curves_mime = "application/x-bar-rewind-curves";
+
+/// A desktop entry that handles barrewind:// and the .curves MIME type, in the user's own data
+/// folder. Terminal=true gives the player a window to report downloads and errors in.
+fn registerFreedesktop(ctx: Ctx, install: bool) !void {
+    const data = ctx.env.get("XDG_DATA_HOME") orelse
+        try join(ctx, &.{ ctx.env.get("HOME") orelse return fail(ctx, "no HOME", .{}), ".local", "share" });
+    const apps = try join(ctx, &.{ data, "applications" });
+    const mime = try join(ctx, &.{ data, "mime" });
+    const entry = try join(ctx, &.{ apps, "bar-rewind.desktop" });
+    const package = try join(ctx, &.{ mime, "packages", "bar-rewind.xml" });
+    if (install) {
+        const exe = try std.process.executablePathAlloc(ctx.io, ctx.gpa);
+        try Io.Dir.cwd().createDirPath(ctx.io, apps);
+        try Io.Dir.cwd().createDirPath(ctx.io, try join(ctx, &.{ mime, "packages" }));
+        try Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = entry, .data = try std.fmt.allocPrint(ctx.gpa,
+            \\[Desktop Entry]
+            \\Type=Application
+            \\Name=BAR Rewind
+            \\Comment=Plays BAR Rewind replays in BAR
+            \\Exec="{s}" %u
+            \\Terminal=true
+            \\NoDisplay=true
+            \\MimeType=x-scheme-handler/barrewind;{s};
+            \\
+        , .{ exe, curves_mime }) });
+        try Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = package, .data =
+            \\<?xml version="1.0" encoding="UTF-8"?>
+            \\<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+            \\  <mime-type type="application/x-bar-rewind-curves">
+            \\    <comment>BAR Rewind replay</comment>
+            \\    <glob pattern="*.curves"/>
+            \\  </mime-type>
+            \\</mime-info>
+            \\
+        });
+    } else {
+        Io.Dir.cwd().deleteFile(ctx.io, entry) catch {};
+        Io.Dir.cwd().deleteFile(ctx.io, package) catch {};
+    }
+    // desktops without these tools read the files directly
+    _ = succeeds(ctx, &.{ "update-mime-database", mime });
+    _ = succeeds(ctx, &.{ "update-desktop-database", apps });
+    if (!install) return;
+
+    for ([_][]const u8{ "x-scheme-handler/barrewind", curves_mime }) |kind| {
+        if (!succeeds(ctx, &.{ "xdg-mime", "default", "bar-rewind.desktop", kind }))
+            return fail(ctx, "xdg-mime could not make bar-rewind the handler for {s} (is xdg-utils installed?)", .{kind});
+    }
+}
+
+/// True when the command ran and exited 0; a missing command is false
+fn succeeds(ctx: Ctx, argv: []const []const u8) bool {
+    const r = std.process.run(ctx.gpa, ctx.io, .{ .argv = argv }) catch return false;
 
     return r.term == .exited and r.term.exited == 0;
 }

@@ -47,9 +47,10 @@ Map previews of `.sd7` maps need [7-Zip](https://www.7-zip.org/) (`7z` on Linux)
 ### Just watching a parsed replay
 
 A `.curves` file holds everything playback needs, so watching one someone else parsed needs only BAR and
-`bar-rewind.exe`, no Python or app. Run it once: `.curves` files and Watch links on a BAR Rewind server
-then open with it. It puts the player in BAR's data folder and fetches the replay's engine, game and map
-when they're missing. `bar-rewind.exe --uninstall` undoes the registration.
+the player (`bar-rewind.exe` on Windows, `bar-rewind` on Linux), no Python or app. Run it once: `.curves`
+files and Watch links on a BAR Rewind server then open with it (on Linux through a desktop entry in
+`~/.local/share/applications`, which needs `xdg-utils`). It puts the player in BAR's data folder and
+fetches the replay's engine, game and map when they're missing. `--uninstall` undoes the registration.
 
 ## Build from source (custom install)
 
@@ -59,7 +60,7 @@ Needs [Zig](https://ziglang.org/) 0.17 and Python 3.
 zig build run                        # the app
 zig build run -Ddemo=<replay.sdfz>   # parse (once, cached) and play one replay
 zig build test
-zig build dist                       # the packages, and the player alone (dist/bar-rewind.exe)
+zig build dist                       # the packages, and the player alone (dist/bar-rewind.exe, dist/bar-rewind-player-linux)
 ```
 
 `zig build -Dserver-host=<host>` sets the only host the player downloads replays from (`SERVER_HOST=<host>`
@@ -68,7 +69,7 @@ for `zig build dist`); without it the player plays local files only.
 - `lua/dump_replay.lua`: the BAR widget that records a replay while the headless engine re-simulates it
 - `src/bake.zig`, `src/curves.zig`: recording → `.curves` (keyframes thinned with Douglas–Peucker), and
   `bake export-lua`, which writes them in the form the player reads
-- `src/player.zig`: `bar-rewind.exe`, which plays a `.curves` with the mutator built in
+- `src/player.zig`: the player, which plays a `.curves` with the mutator built in
 - `recoil/barrewind.sdd`: the BAR Rewind game (a mutator on top of BAR) that plays `.curves`: the
   `replay_player`, `replay_eco` and `replay_view` gadgets, the chat, map-mark and timeline widgets, and
   the game info panel that stands in for BAR's
