@@ -348,6 +348,9 @@ local function watching()
 	return playing and speed > 0 and speed <= 4 and t - last_t <= 8
 end
 local spawned = {} -- [record index] = unitID
+-- replay unit id -> engine unit id of the builder last recorded working on it: a nanoframe is created
+-- with its builder, as the engine does, and BAR's Prevent Lab Hax2 removes builderless ones
+local builderOf = {}
 local spawnedFeatures = {}
 
 local animate
@@ -372,7 +375,12 @@ local function spawnUnit(i, r)
 	local team = teamOf(teamAt(r, t))
 	-- the engine draws a nanoframe only for a unit created as being built
 	local st = sampleW("statuses", r.index, 4, t, ST)
-	local u = CreateUnit(name, v[1], v[2], v[3], 0, team, st ~= nil and st[3] < 1)
+	local frame = st ~= nil and st[3] < 1
+	local builder = frame and builderOf[r.id]
+	if frame and not (builder and Spring.ValidUnitID(builder) and Spring.GetUnitTeam(builder) == team) then
+		builder = Spring.GetTeamUnits(team)[1]
+	end
+	local u = CreateUnit(name, v[1], v[2], v[3], 0, team, frame, true, nil, frame and builder or nil)
 	if not u then return warnOnce("CreateUnit failed: " .. name .. " team " .. team) end
 	MoveCtrl.Enable(u)
 	-- BAR's own script animates: weapons never fire
@@ -481,6 +489,7 @@ local function startBuilding(u, target)
 end
 local function work(u, r, g)
 	local cmd, target, power = 0, 0, 0
+	if g and g[5] ~= 0 and g[6] > 0 then builderOf[g[6]] = u end
 	if g and g[5] ~= 0 and (playing or shot) then
 		local id = g[6]
 		if id > 0 then
