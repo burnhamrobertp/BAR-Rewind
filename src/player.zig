@@ -7,7 +7,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const options = @import("options");
 const bake = @import("bake.zig");
 const curves = @import("curves.zig");
 
@@ -167,7 +166,7 @@ fn succeeds(ctx: Ctx, argv: []const []const u8) bool {
 // download ------------------------------------------------------------------------------------------
 
 /// barrewind://play?url=<the replay's https URL, percent-encoded>. Any web page can open such a
-/// link, so only the BAR Rewind server's host is fetched from.
+/// link, so only hosts the user said yes to are fetched from (see trust).
 fn download(ctx: Ctx, link: []const u8) ![]const u8 {
     const at = std.mem.indexOf(u8, link, "url=") orelse return fail(ctx, "not a BAR Rewind link: {s}", .{link});
     const raw = try ctx.gpa.dupe(u8, link[at + "url=".len ..]);
@@ -176,9 +175,8 @@ fn download(ctx: Ctx, link: []const u8) ![]const u8 {
     const uri = std.Uri.parse(url) catch return fail(ctx, "not a URL: {s}", .{url});
     var host_buffer: [Io.net.HostName.max_len]u8 = undefined;
     const host = (Io.net.HostName.fromUri(uri, &host_buffer) catch return fail(ctx, "no host in {s}", .{url})).bytes;
-    if (options.server_host.len == 0) return fail(ctx, "this bar-rewind was built without a server to download from", .{});
-    if (!std.mem.eql(u8, uri.scheme, "https") or !std.ascii.eqlIgnoreCase(host, options.server_host))
-        return fail(ctx, "refusing to download from {s}: only https://{s} is trusted", .{ url, options.server_host });
+    if (!std.mem.eql(u8, uri.scheme, "https")) return fail(ctx, "refusing {s}: replays are only downloaded over https", .{url});
+    try trust(ctx, host);
 
     const path = try uri.path.toRawMaybeAlloc(ctx.gpa);
     const base = std.fs.path.basenamePosix(path);
@@ -199,11 +197,10 @@ fn download(ctx: Ctx, link: []const u8) ![]const u8 {
     const part = try std.fmt.allocPrint(ctx.gpa, "{s}.part", .{dest});
     var client: std.http.Client = .{ .allocator = ctx.gpa, .io = ctx.io };
     defer client.deinit();
-    var req = client.request(.GET, uri, .{}) catch |err| return fail(ctx, "cannot reach {s}: {s}", .{ host, @errorName(err) });
+    var req = client.request(.GET, uri, .{ .redirect_behavior = .unhandled }) catch |err| return fail(ctx, "cannot reach {s}: {s}", .{ host, @errorName(err) });
     defer req.deinit();
     try req.sendBodiless();
-    var redirect_buffer: [8192]u8 = undefined;
-    var response = try req.receiveHead(&redirect_buffer);
+    var response = try req.receiveHead(&.{});
     if (response.head.status != .ok) return fail(ctx, "the server answered {d} {s} (links expire: get a new one from the site)", .{ @intFromEnum(response.head.status), response.head.reason });
     const total = response.head.content_length;
     const gzipped = response.head.content_encoding == .gzip;
@@ -255,6 +252,66 @@ fn gunzip(ctx: Ctx, from: []const u8, to: []const u8) !void {
     try out.interface.flush();
 }
 
+/// Asks once per host, in the player's window, and remembers a yes in the config file
+fn trust(ctx: Ctx, host: []const u8) !void {
+    var config = try loadConfig(ctx);
+    const hosts = config.object.get("trusted_hosts");
+    if (hosts) |list| if (list == .array) for (list.array.items) |h| {
+        if (h == .string and std.ascii.eqlIgnoreCase(h.string, host)) return;
+    };
+
+    if (!(Io.File.stdin().isTty(ctx.io) catch false))
+        return fail(ctx, "{s} is not a trusted host, and there is no window to ask in: run bar-rewind on the link from a terminal", .{host});
+    std.debug.print(
+        \\A web page asked BAR Rewind to download and play a replay from
+        \\
+        \\    {s}
+        \\
+        \\Only say yes to a BAR Rewind site you use. BAR runs what the replay contains.
+        \\Allow downloads from {s} from now on? [y/N]
+    , .{ host, host });
+    var buffer: [256]u8 = undefined;
+    var stdin = Io.File.stdin().readerStreaming(ctx.io, &buffer);
+    const answer = std.mem.trim(u8, (stdin.interface.takeDelimiter('\n') catch null) orelse "", " \t\r");
+    if (!std.ascii.eqlIgnoreCase(answer, "y") and !std.ascii.eqlIgnoreCase(answer, "yes"))
+        return fail(ctx, "not downloading from {s}", .{host});
+
+    var list = if (hosts) |h| (if (h == .array) h.array else std.json.Array.init(ctx.gpa)) else std.json.Array.init(ctx.gpa);
+    try list.append(.{ .string = try std.ascii.allocLowerString(ctx.gpa, host) });
+    try config.object.put(ctx.gpa, "trusted_hosts", .{ .array = list });
+    try saveConfig(ctx, config);
+    std.debug.print("{s} is trusted (remove it from {s} to undo)\n", .{ host, try configPath(ctx) });
+}
+
+// settings --------------------------------------------------------------------------------------------
+
+/// Shared with the BAR Rewind app, which keeps bar_data and out_dir in it
+fn configPath(ctx: Ctx) ![]const u8 {
+    const home = ctx.env.get(if (windows) "USERPROFILE" else "HOME") orelse "";
+    if (windows) return join(ctx, &.{ ctx.env.get("APPDATA") orelse home, "bar-rewind.json" });
+
+    return join(ctx, &.{ ctx.env.get("XDG_CONFIG_HOME") orelse try join(ctx, &.{ home, ".config" }), "bar-rewind.json" });
+}
+
+fn loadConfig(ctx: Ctx) !std.json.Value {
+    const text = Io.Dir.cwd().readFileAlloc(ctx.io, try configPath(ctx), ctx.gpa, .limited(1 << 20)) catch |err| switch (err) {
+        error.FileNotFound => return .{ .object = .{} },
+        else => return err,
+    };
+    const value = std.json.parseFromSliceLeaky(std.json.Value, ctx.gpa, text, .{}) catch
+        return fail(ctx, "{s} is not valid JSON", .{try configPath(ctx)});
+    if (value != .object) return fail(ctx, "{s} is not a JSON object", .{try configPath(ctx)});
+
+    return value;
+}
+
+fn saveConfig(ctx: Ctx, config: std.json.Value) !void {
+    const path = try configPath(ctx);
+    if (std.fs.path.dirname(path)) |dir| try Io.Dir.cwd().createDirPath(ctx.io, dir);
+    const text = try std.json.Stringify.valueAlloc(ctx.gpa, config, .{ .whitespace = .indent_2 });
+    try Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = try std.fmt.allocPrint(ctx.gpa, "{s}\n", .{text}) });
+}
+
 // BAR's data folder -----------------------------------------------------------------------------------
 
 fn cacheDir(ctx: Ctx) ![]const u8 {
@@ -276,10 +333,7 @@ fn hasEngine(ctx: Ctx, bar: []const u8) bool {
 /// The folder the BAR Rewind app was told about, else where BAR's installers put it
 fn barData(ctx: Ctx) ![]const u8 {
     const home = ctx.env.get(if (windows) "USERPROFILE" else "HOME") orelse "";
-    const config = if (windows)
-        try join(ctx, &.{ ctx.env.get("APPDATA") orelse home, "bar-rewind.json" })
-    else
-        try join(ctx, &.{ ctx.env.get("XDG_CONFIG_HOME") orelse try join(ctx, &.{ home, ".config" }), "bar-rewind.json" });
+    const config = try configPath(ctx);
     if (Io.Dir.cwd().readFileAlloc(ctx.io, config, ctx.gpa, .limited(1 << 20))) |text| {
         const Config = struct { bar_data: []const u8 = "" };
         if (std.json.parseFromSliceLeaky(Config, ctx.gpa, text, .{ .ignore_unknown_fields = true })) |cfg| {

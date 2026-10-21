@@ -28,8 +28,6 @@ pub fn build(b: *std.Build) void {
     const run_pack = b.addRunArtifact(pack);
     run_pack.addDirectoryArg(b.path("recoil/barrewind.sdd"));
     const mutator_tar = run_pack.addOutputFileArg("mutator.tar");
-    const player_options = b.addOptions();
-    player_options.addOption([]const u8, "server_host", b.option([]const u8, "server-host", "bar-rewind: the only host it downloads replays from") orelse "");
     const player = b.addExecutable(.{
         .name = "bar-rewind",
         .root_module = b.createModule(.{
@@ -40,7 +38,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     player.root_module.addAnonymousImport("mutator.tar", .{ .root_source_file = mutator_tar });
-    player.root_module.addOptions("options", player_options);
     b.installArtifact(player);
 
     // run: the app, or one replay straight to playback ------------------------------------------

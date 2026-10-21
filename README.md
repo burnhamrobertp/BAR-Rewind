@@ -48,10 +48,11 @@ Map previews of `.sd7` maps need [7-Zip](https://www.7-zip.org/) (`7z` on Linux)
 
 A `.curves` file holds everything playback needs, so watching one someone else parsed needs only BAR and
 the player (`bar-rewind.exe` on Windows, `bar-rewind-player-linux` on Linux), no Python or app. Run it
-once and `.curves` files open with it (on Linux through a desktop entry in `~/.local/share/applications`,
-which needs `xdg-utils`). It puts the player in BAR's data folder and fetches the replay's engine, game and
-map when they're missing. `--uninstall` undoes the registration. The release's player only plays local
-files: a BAR Rewind server hands out its own build, which also opens the server's Watch links.
+once and `.curves` files and Watch links on a BAR Rewind server open with it (on Linux through a desktop
+entry in `~/.local/share/applications`, which needs `xdg-utils`). The first Watch link from a server asks
+whether to trust that server; the answer is kept in `bar-rewind.json` (`trusted_hosts`). It puts the player
+in BAR's data folder and fetches the replay's engine, game and map when they're missing. `--uninstall`
+undoes the registration.
 
 ## Build from source (custom install)
 
@@ -63,9 +64,6 @@ zig build run -Ddemo=<replay.sdfz>   # parse (once, cached) and play one replay
 zig build test
 zig build dist                       # the packages, and the player alone (dist/bar-rewind.exe, dist/bar-rewind-player-linux)
 ```
-
-`zig build -Dserver-host=<host>` sets the only host the player downloads replays from (`SERVER_HOST=<host>`
-for `zig build dist`); without it the player plays local files only.
 
 - `lua/dump_replay.lua`: the BAR widget that records a replay while the headless engine re-simulates it
 - `src/bake.zig`, `src/curves.zig`: recording → `.curves` (keyframes thinned with Douglas–Peucker), and

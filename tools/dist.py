@@ -4,8 +4,7 @@
 # x86_64, runs on any CPU), the Python app, the dump widget and the BAR Rewind mutator.
 # Users extract one and run bar-rewind (Linux) or bar-rewind.bat (Windows). Needs Python 3 and BAR.
 # Also dist/bar-rewind.exe and dist/bar-rewind-player-linux: the player alone, all a viewer needs.
-# SERVER_HOST=<host> sets the only host the player downloads replays from.
-import io, os, shutil, subprocess, tarfile, time, zipfile
+import io, shutil, subprocess, tarfile, time, zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -23,9 +22,7 @@ def mutator_files():
 def build(target):
     """The folder holding bake and bar-rewind built for `target`."""
     prefix = DIST / "stage" / target
-    host = os.environ.get("SERVER_HOST")
-    subprocess.run(["zig", "build", f"-Dtarget={target}", "-Dcpu=baseline", "--prefix", str(prefix)]
-                   + ([f"-Dserver-host={host}"] if host else []), check=True, cwd=ROOT)
+    subprocess.run(["zig", "build", f"-Dtarget={target}", "-Dcpu=baseline", "--prefix", str(prefix)], check=True, cwd=ROOT)
     return prefix / "bin"
 
 
