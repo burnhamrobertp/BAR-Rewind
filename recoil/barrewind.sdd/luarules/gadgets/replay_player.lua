@@ -327,6 +327,16 @@ local function teamAt(r, t)
 	return team
 end
 
+-- whether playing from `from` to `to` passed the recorded change that gave the unit `team`
+local function passedShare(r, from, to, team)
+	for k = 1, #(r.teams or {}) do
+		local key = r.teams[k]
+		if key.t > from and key.t <= to and key.team == team then return true end
+	end
+
+	return false
+end
+
 -- teams: replay team ids map onto the script's teams (pipeline.py's start script numbers them the same)
 local gaia = Spring.GetGaiaTeamID()
 local function teamOf(replayTeam)
@@ -655,10 +665,17 @@ local function syncUnits()
 				r.work_cmd, r.work_target, r.work_power = nil, nil, nil
 			end
 			if u then
-				-- a share the timeline crossed: the engine's own transfer, so BAR reacts as it did live
+				-- playing over a share is the engine's own transfer, so BAR reacts as it did live; going
+				-- back over one, the unit is put back quietly, or BAR would announce a share the wrong way
 				local team = teamOf(teamAt(r, t))
-				if r.teams and Spring.GetUnitTeam(u) ~= team then Spring.TransferUnit(u, team, true) end
-				place(u, r)
+				if r.teams and Spring.GetUnitTeam(u) ~= team then
+					if t > last_t and passedShare(r, last_t, t, teamAt(r, t)) then
+						Spring.TransferUnit(u, team, true)
+					else
+						r.rebuild = true
+					end
+				end
+				if not r.rebuild then place(u, r) end
 				if r.rebuild then
 					r.rebuild = nil
 					DestroyUnit(u, false, true)
