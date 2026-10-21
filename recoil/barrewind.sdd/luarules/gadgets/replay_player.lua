@@ -370,7 +370,9 @@ local function spawnUnit(i, r)
 	local v = sampleW("transforms", r.index, 7, t, TF)
 	if not v then return nil end
 	local team = teamOf(teamAt(r, t))
-	local u = CreateUnit(name, v[1], v[2], v[3], 0, team)
+	-- the engine draws a nanoframe only for a unit created as being built
+	local st = sampleW("statuses", r.index, 4, t, ST)
+	local u = CreateUnit(name, v[1], v[2], v[3], 0, team, st ~= nil and st[3] < 1)
 	if not u then return warnOnce("CreateUnit failed: " .. name .. " team " .. team) end
 	MoveCtrl.Enable(u)
 	-- BAR's own script animates: weapons never fire
@@ -585,6 +587,11 @@ local function place(u, r)
 	SetUnitDirection(u, fx, fy, fz, fy * uz - fz * uy, fz * ux - fx * uz, fx * uy - fy * ux)
 	local s = sampleW("statuses", r.index, 4, t, ST)
 	if s then
+		-- a finished unit cannot be unfinished: rewound to before it was done, it is built again
+		if s[3] < 1 and not Spring.GetUnitIsBeingBuilt(u) then
+			r.rebuild = true
+			return
+		end
 		SetUnitHealth(u, { health = math.max(s[1], 1), build = s[3] })
 		local on = s[4] >= 0.5 and 1 or 0
 		if r.on ~= on then
@@ -643,6 +650,17 @@ local function syncUnits()
 				local team = teamOf(teamAt(r, t))
 				if r.teams and Spring.GetUnitTeam(u) ~= team then Spring.TransferUnit(u, team, true) end
 				place(u, r)
+				if r.rebuild then
+					r.rebuild = nil
+					DestroyUnit(u, false, true)
+					if live[r.id] == u then live[r.id] = nil end
+					u = spawnUnit(i, r)
+					spawned[i] = u
+					if u then
+						live[r.id] = u
+						place(u, r)
+					end
+				end
 			end
 		end
 	end
