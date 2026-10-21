@@ -750,16 +750,24 @@ pub fn exportFile(io: std.Io, gpa: std.mem.Allocator, file: curves.File, out_dir
 
     // names instead of ids: the playing BAR version may number defs differently than the replay's
     const meta = try parseMeta(gpa, file);
-    try w.print("  map = \"{s}\",\n", .{meta.map.name});
+    try w.writeAll("  map = ");
+    try luaString(w, meta.map.name);
+    try w.writeAll(",\n");
     inline for (.{ .{ "defs", meta.defs }, .{ "fdefs", meta.fdefs }, .{ "wdefs", meta.wdefs } }) |pair| {
         try w.print("  {s} = {{", .{pair[0]});
-        for (pair[1].map.keys(), pair[1].map.values()) |id, def| try w.print(" [{s}] = \"{s}\",", .{ id, def.name });
+        for (pair[1].map.keys(), pair[1].map.values()) |id, def| {
+            try w.print(" [{d}] = ", .{try std.fmt.parseInt(i64, id, 10)});
+            try luaString(w, def.name);
+            try w.writeAll(",");
+        }
         try w.writeAll(" },\n");
     }
     try w.writeAll("  teams = {");
     for (meta.teams.map.keys(), meta.teams.map.values()) |id, team| {
         const c = byteColor(team.color);
-        try w.print(" [{s}] = {{ color = {{ {d:.9}, {d:.9}, {d:.9} }}, ally = {d}, leader = \"{s}\" }},", .{ id, c[0], c[1], c[2], team.ally, team.leader orelse "" });
+        try w.print(" [{d}] = {{ color = {{ {d:.9}, {d:.9}, {d:.9} }}, ally = {d}, leader = ", .{ try std.fmt.parseInt(i64, id, 10), c[0], c[1], c[2], team.ally });
+        try luaString(w, team.leader orelse "");
+        try w.writeAll(" },");
     }
     try w.writeAll(" },\n  chat = {\n");
     for (meta.chat) |c| {
@@ -783,7 +791,7 @@ pub fn exportFile(io: std.Io, gpa: std.mem.Allocator, file: curves.File, out_dir
     }
     try w.writeAll("  },\n  players = {");
     for (meta.players.map.keys(), meta.players.map.values()) |id, name| {
-        try w.print(" [{s}] = ", .{id});
+        try w.print(" [{d}] = ", .{try std.fmt.parseInt(i64, id, 10)});
         try luaString(w, name);
         try w.writeAll(",");
     }
