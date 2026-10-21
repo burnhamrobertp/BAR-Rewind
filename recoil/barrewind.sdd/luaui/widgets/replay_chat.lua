@@ -22,6 +22,8 @@ local floor = math.floor
 local NOTICE = "> <BAR Rewind> "
 -- shifts that end within this many frames of where they began are not worth a line
 local MIN_SHIFT = 30
+-- after a shift, the lines before the new time that are printed again for context
+local CONTEXT_LINES = 10
 local shift = VFS.Include("LuaUI/replay_shift.lua")()
 
 local cursor = 1
@@ -59,8 +61,10 @@ function widget:Update()
 	if not t then return end
 	local state, from, to = shift(t)
 	if state == "shifting" then return end
-	if state == "settled" and math.abs(to - from) >= MIN_SHIFT then notice(from, to) end
-	if cursor > 1 and chat[cursor - 1].f > t then cursor = firstAfter(t) end
+	if state == "settled" then
+		if math.abs(to - from) >= MIN_SHIFT then notice(from, to) end
+		cursor = math.max(1, firstAfter(t) - CONTEXT_LINES)
+	end
 	while cursor <= #chat and chat[cursor].f <= t do
 		local m = chat[cursor]
 		Spring.Echo(line(m))
