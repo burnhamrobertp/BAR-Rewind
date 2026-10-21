@@ -20,19 +20,11 @@ local chat = M.chat or {}
 local GetParam = Spring.GetGameRulesParam
 local floor = math.floor
 local NOTICE = "> <BAR Rewind> "
--- forward jumps shorter than this are playback at speed, not a seek
-local JUMP = 600
--- a shift (seek, drag, reverse playback) is over once time has moved only forward, in steps no
--- bigger than playback makes, for this long
-local SETTLE = 1
 -- shifts that end within this many frames of where they began are not worth a line
 local MIN_SHIFT = 30
-local GetTimer, DiffTimers = Spring.GetTimer, Spring.DiffTimers
+local shift = VFS.Include("LuaUI/replay_shift.lua")()
 
 local cursor = 1
-local last_t = nil
-local shift_from = nil
-local last_jump = nil
 
 local function clock(frame)
 	local s = floor(frame / 30)
@@ -69,16 +61,9 @@ end
 function widget:Update()
 	local t = GetParam("replay_t")
 	if not t then return end
-	if last_t and (t < last_t or t - last_t > JUMP) then
-		shift_from = shift_from or last_t
-		last_jump = GetTimer()
-	end
-	last_t = t
-	if shift_from then
-		if DiffTimers(GetTimer(), last_jump) < SETTLE then return end
-		if math.abs(t - shift_from) >= MIN_SHIFT then notice(shift_from, t) end
-		shift_from = nil
-	end
+	local state, from, to = shift(t)
+	if state == "shifting" then return end
+	if state == "settled" and math.abs(to - from) >= MIN_SHIFT then notice(from, to) end
 	if cursor > 1 and chat[cursor - 1].f > t then cursor = firstAfter(t) end
 	while cursor <= #chat and chat[cursor].f <= t do
 		local m = chat[cursor]
