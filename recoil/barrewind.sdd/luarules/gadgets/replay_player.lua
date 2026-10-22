@@ -148,7 +148,7 @@ local win = nil
 
 local function loadWindow(w)
 	if win and win.w == w then return end
-	win = { w = w, first = {}, count = {}, chunks = {}, cursors = {} }
+	win = { w = w, first = {}, count = {}, chunks = {}, segments = {}, held = {} }
 	for kind, info in pairs(M.windows) do
 		if type(info) == "table" then
 			local idx = loadData("replay/" .. kind .. "_w" .. w .. "_index.bin")
@@ -161,7 +161,7 @@ local function loadWindow(w)
 					c[v[i * 3 + 1]] = v[i * 3 + 3]
 				end
 			end
-			win.first[kind], win.count[kind], win.chunks[kind], win.cursors[kind] = f, c, {}, {}
+			win.first[kind], win.count[kind], win.chunks[kind], win.segments[kind] = f, c, {}, {}
 		end
 	end
 end
@@ -184,53 +184,92 @@ local function wt(kind, index)
 end
 
 local function windowFor(t)
-	local w = floor((t - M.first_frame) / M.windows.size)
-	loadWindow(math.max(0, math.min(M.windows.count - 1, w)))
+	if win and win.from <= t and t < win.to then return end
+	local w = math.max(0, math.min(M.windows.count - 1, floor((t - M.first_frame) / M.windows.size)))
+	loadWindow(w)
+	win.from = w > 0 and M.first_frame + w * M.windows.size or -math.huge
+	win.to = w < M.windows.count - 1 and M.first_frame + (w + 1) * M.windows.size or math.huge
+end
+
+-- a curve's value over frames `from` to just before `to` where it does not change, kept per
+-- `slot` and curve.
+-- Sampling inside the span returns the same table, so callers can tell nothing changed
+local function heldIn(slot, curve, t)
+	local spans = win.held[slot]
+	if not spans then
+		spans = {}
+		win.held[slot] = spans
+	end
+	local h = spans[curve]
+	if h and h.from <= t and t < h.to then return h end
+
+	return nil, spans
+end
+
+-- keys this close count as one value: recorded aim pieces drift by float noise between keys, and
+-- would otherwise never hold still
+local HOLD_WITHIN = { transforms = 1e-3, statuses = 1e-3, pose_keys = 2e-3 }
+
+local function hold(spans, curve, from, to, str, pos, n)
+	local h = { from = from, to = to }
+	for i = 1, n do h[i] = F32(str, pos + 4 * i) end
+	spans[curve] = h
+
+	return h
 end
 
 -- value of curve `curve` (unit record for transforms/statuses, track for pose_keys) at frame t,
--- into `out`
-local function sampleW(kind, curve, n, t, out)
+-- into `out`, or the held span's table while it does not change
+local function sampleW(kind, curve, n, t, out, slot)
 	windowFor(t)
+	local held, spans = heldIn(slot or kind, curve, t)
+	if held then return held end
 	local first = win.first[kind][curve]
 	if not first then return nil end
 	local count = win.count[kind][curve]
-	local lo
-	if t <= wt(kind, first) then
-		lo = 0
-	elseif t >= wt(kind, first + count - 1) then
-		lo = count - 1
+	local first_t, last_t = wt(kind, first), wt(kind, first + count - 1)
+	if t < first_t then
+		local str, pos = wkey(kind, first)
+		return hold(spans, curve, -math.huge, first_t, str, pos, n)
+	elseif t >= last_t then
+		local str, pos = wkey(kind, first + count - 1)
+		return hold(spans, curve, last_t, math.huge, str, pos, n)
 	end
-	if lo then
-		local str, pos = wkey(kind, first + lo)
-		for i = 1, n do out[i] = F32(str, pos + 4 * i) end
-		return out
-	end
-	local cursors = win.cursors[kind]
-	lo = cursors[curve]
-	if not (lo and lo < count - 1 and wt(kind, first + lo) <= t and t < wt(kind, first + lo + 1)) then
+	-- the keys around t, read once per segment: [1..n] the earlier key's values, [n+1..2n] the later's
+	local segments = win.segments[kind]
+	local seg = segments[curve]
+	if not (seg and seg.ta <= t and t < seg.tb) then
 		local a, b = 0, count - 1
 		while b - a > 1 do
 			local mid = floor((a + b) / 2)
 			if wt(kind, first + mid) <= t then a = mid else b = mid end
 		end
-		lo = a
-		cursors[curve] = lo
+		local sa, pa = wkey(kind, first + a)
+		local sb, pb = wkey(kind, first + a + 1)
+		local still, eps = true, HOLD_WITHIN[kind]
+		for i = 1, n do
+			if math.abs(F32(sb, pb + 4 * i) - F32(sa, pa + 4 * i)) > eps then still = false break end
+		end
+		if still then return hold(spans, curve, U32(sa, pa), U32(sb, pb), sa, pa, n) end
+		seg = seg or {}
+		segments[curve] = seg
+		seg.ta, seg.tb = U32(sa, pa), U32(sb, pb)
+		for i = 1, n do seg[i], seg[n + i] = F32(sa, pa + 4 * i), F32(sb, pb + 4 * i) end
 	end
-	local sa, pa = wkey(kind, first + lo)
-	local sb, pb = wkey(kind, first + lo + 1)
-	local ta, tb = U32(sa, pa), U32(sb, pb)
-	local f = tb > ta and (t - ta) / (tb - ta) or 0
+	local f = (t - seg.ta) / (seg.tb - seg.ta)
 	for i = 1, n do
-		local va = F32(sa, pa + 4 * i)
-		out[i] = va + (F32(sb, pb + 4 * i) - va) * f
+		local va = seg[i]
+		out[i] = va + (seg[n + i] - va) * f
 	end
+
 	return out
 end
 
--- step curve (targets): the last key at or before t, no interpolation, into `out`
-local function sampleStepW(kind, curve, n, t, out)
+-- step curve (targets): the last key at or before t, no interpolation, held until the next key
+local function sampleStepW(kind, curve, n, t, slot)
 	windowFor(t)
+	local held, spans = heldIn(slot, curve, t)
+	if held then return held end
 	local first = win.first[kind][curve]
 	if not first then return nil end
 	local count = win.count[kind][curve]
@@ -241,12 +280,13 @@ local function sampleStepW(kind, curve, n, t, out)
 		if wt(kind, first + mid) <= t then a = mid else b = mid end
 	end
 	local str, pos = wkey(kind, first + a)
-	for i = 1, n do out[i] = F32(str, pos + 4 * i) end
-	return out
+	local to = a + 1 < count and wt(kind, first + a + 1) or math.huge
+
+	return hold(spans, curve, U32(str, pos), to, str, pos, n)
 end
 
 -- sample buffers, reused every frame
-local TF, TF_PREV, ST, TG, TG_AHEAD, POSE, PK = {}, {}, {}, {}, {}, {}, {}
+local TF, TF_PREV, ST, POSE, PK = {}, {}, {}, {}, {}
 local AIM_LEAD = 15
 
 -- records ---------------------------------------------------------------------------------------
@@ -438,6 +478,7 @@ end
 
 -- runs inside the unit's script context (CallAsUnit): instant Turn/Move to the curve's pose
 local pose_unit
+local POSE_WITHIN = 1e-4
 local function applyPose()
 	local r = pose_unit
 	local map = scriptPieces(r.u, r.def)
@@ -445,11 +486,24 @@ local function applyPose()
 		local tr = r.tracks[k]
 		local sp = map[tr.piece]
 		local v = sp and sampleW("pose_keys", tr.index, 6, t, POSE)
-		-- every frame: BAR's script runs too and would turn these pieces between keys
-		if v then
-			Turn(sp, 1, v[1]) Turn(sp, 2, v[2]) Turn(sp, 3, v[3])
-			Move(sp, 1, v[4]) Move(sp, 2, v[5]) Move(sp, 3, v[6])
+		if v and (v == POSE or v ~= tr.posed or tr.posed_u ~= r.u) then
+			-- most aim pieces turn about one axis: only the axes that moved are set
+			local at = tr.at
+			if not at then
+				at = {}
+				tr.at = at
+			end
+			if tr.posed_u ~= r.u then
+				for i = 1, 6 do at[i] = nil end
+			end
+			for i = 1, 6 do
+				if not at[i] or math.abs(v[i] - at[i]) > POSE_WITHIN then
+					if i <= 3 then Turn(sp, i, v[i]) else Move(sp, i - 3, v[i]) end
+					at[i] = v[i]
+				end
+			end
 		end
+		tr.posed, tr.posed_u = v, r.u
 	end
 end
 
@@ -538,28 +592,46 @@ end
 -- scripts animate from state, like PA: moving -> StartMoving (walk cycles), target -> weapons aim.
 -- `posed` units have their aim pieces recorded: they get no target, the curves aim them
 animate = function(u, r, v, posed)
-	-- velocity from one frame back, inside the current window only: sampling t - 1 across a window
-	-- boundary would swap windows once per unit. On the boundary frame the last motion carries on.
 	local window_start = M.first_frame + win.w * M.windows.size
-	local prev = t - 1 >= window_start and sampleW("transforms", r.index, 7, t - 1, TF_PREV)
 	local moving = r.moving
-	if prev then
-		local vx, vy, vz = v[1] - prev[1], v[2] - prev[2], v[3] - prev[3]
-		MoveCtrl.SetVelocity(u, vx, vy, vz)
-		moving = vx * vx + vz * vz > 0.01
+	if r.still then
+		if r.velocity then MoveCtrl.SetVelocity(u, 0, 0, 0) end
+		r.velocity, moving = false, false
+	else
+		-- velocity per replay frame: from where the unit was put last frame, playing forward at up to
+		-- 2x; otherwise from one frame back, inside the current window only (sampling t - 1 across a
+		-- window boundary would swap windows once per unit; on the boundary frame the last motion
+		-- carries on)
+		local dt = r.prev_u == u and t - r.prev_t
+		local px, py, pz
+		if dt and dt > 0 and dt <= 2 then
+			px, py, pz = r.prev_x, r.prev_y, r.prev_z
+		else
+			local prev = t - 1 >= window_start and sampleW("transforms", r.index, 7, t - 1, TF_PREV, "transforms_prev")
+			if prev then px, py, pz, dt = prev[1], prev[2], prev[3], 1 end
+		end
+		if px then
+			local vx, vy, vz = (v[1] - px) / dt, (v[2] - py) / dt, (v[3] - pz) / dt
+			if not r.velocity or math.abs(vx - r.vx) + math.abs(vy - r.vy) + math.abs(vz - r.vz) > 1e-3 then
+				MoveCtrl.SetVelocity(u, vx, vy, vz)
+				r.velocity, r.vx, r.vy, r.vz = true, vx, vy, vz
+			end
+			moving = vx * vx + vz * vz > 0.01
+		end
+		r.prev_x, r.prev_y, r.prev_z, r.prev_t, r.prev_u = v[1], v[2], v[3], t, u
 	end
 	if moving ~= r.moving then
 		r.moving = moving
 		callScript(u, moving and "StartMoving" or "StopMoving", 0)
 	end
-	local g = sampleStepW("targets", r.index, 7, t, TG)
+	local g = sampleStepW("targets", r.index, 7, t, "targets")
 	work(u, r, g)
 	if posed then return end
 	-- scripts need time to turn towards a target: aim at the one recorded AIM_LEAD frames ahead (in
 	-- playback direction), staying inside the loaded window
 	local window_last = window_start + M.windows.size - 1
 	local ahead = math.max(window_start, math.min(window_last, t + AIM_LEAD * speed))
-	local a = sampleStepW("targets", r.index, 7, ahead, TG_AHEAD)
+	local a = sampleStepW("targets", r.index, 7, ahead, "targets_ahead")
 	if a and a[1] ~= 0 then g = a end
 	-- the target in numbers (no strings: no garbage): type, unit id or ground cell
 	local tt = g and g[1] or 0
@@ -598,9 +670,20 @@ local function spawnEffects()
 	end
 end
 
-local function place(u, r)
-	local v = sampleW("transforms", r.index, 7, t, TF)
-	if not v then return end
+local HEALTH = {}
+
+-- whether every aim piece of `r` (engine unit `u`) is still in the held pose it was last set to
+local function poseHeld(r, u)
+	for k = 1, #r.tracks do
+		local tr = r.tracks[k]
+		local v = sampleW("pose_keys", tr.index, 6, t, POSE)
+		if v and (v == POSE or v ~= tr.posed or tr.posed_u ~= u) then return false end
+	end
+
+	return true
+end
+
+local function setTransform(u, v)
 	MoveCtrl.SetPosition(u, v[1], v[2], v[3])
 	-- rotation quaternion (lerped keys, the exporter keeps neighbours on the short way round):
 	-- front and up are its rotation's 3rd and 2nd columns; right = front x up
@@ -615,6 +698,16 @@ local function place(u, r)
 	local fx, fy, fz = 2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)
 	local ux, uy, uz = 2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w)
 	SetUnitDirection(u, fx, fy, fz, fy * uz - fz * uy, fz * ux - fx * uz, fx * uy - fy * ux)
+end
+
+local function place(u, r)
+	local v = sampleW("transforms", r.index, 7, t, TF)
+	if not v then return end
+	r.u = u
+	-- MoveCtrl leaves a unit with no velocity where it was put
+	r.still = v ~= TF and v == r.placed and r.placed_u == u
+	r.placed, r.placed_u = v, u
+	if not r.still then setTransform(u, v) end
 	local s = sampleW("statuses", r.index, 4, t, ST)
 	if s then
 		-- a finished unit cannot be unfinished: rewound to before it was done, it is built again
@@ -622,7 +715,13 @@ local function place(u, r)
 			r.rebuild = true
 			return
 		end
-		SetUnitHealth(u, { health = math.max(s[1], 1), build = s[3] })
+		-- read back rather than remembered: the engine heals units and decays unbuilt frames
+		local health, build = math.max(s[1], 1), s[3]
+		local h, _, _, _, b = GetUnitHealth(u)
+		if h ~= health or b ~= build then
+			HEALTH.health, HEALTH.build = health, build
+			SetUnitHealth(u, HEALTH)
+		end
 		local on = s[4] >= 0.5 and 1 or 0
 		if r.on ~= on then
 			r.on = on
@@ -637,24 +736,38 @@ local function place(u, r)
 			Spring.SetUnitNoDraw(u, hidden)
 		end
 	end
-	r.u = u
 	-- recorded aim pieces: set straight from the curves (right after a seek and in reverse);
 	-- BAR's script animates everything else
 	local posed = #r.tracks > 0
-	if posed then
+	if posed and not poseHeld(r, u) then
 		pose_unit = r
 		CallAsUnit(u, applyPose)
 	end
 	animate(u, r, v, posed)
 end
 
+-- the records alive at some point in the window holding t, in record order
+local active, active_w = {}, nil
+local function activeUnits()
+	local w = math.max(0, math.min(M.windows.count - 1, floor((t - M.first_frame) / M.windows.size)))
+	if w == active_w then return active end
+	active, active_w = {}, w
+	local from = w > 0 and M.first_frame + w * M.windows.size or -math.huge
+	local to = w < M.windows.count - 1 and M.first_frame + (w + 1) * M.windows.size or math.huge
+	for i = 1, #units do
+		local r = units[i]
+		if r.born < to and (r.died == ALIVE_FOREVER or r.died > from) then active[#active + 1] = i end
+	end
+
+	return active
+end
+
 local function syncUnits()
 	-- removals first: after a seek, a building that stood on a spot later must be gone before the
 	-- one standing there at t spawns, or the spawn is blocked
-	for i = 1, #units do
+	for i, u in pairs(spawned) do
 		local r = units[i]
-		local u = spawned[i]
-		if u and not alive(r, t) then
+		if not alive(r, t) then
 			if Spring.ValidUnitID(u) then
 				-- killed just now while watching: the engine's death explosion; otherwise (rewound past,
 				-- reclaimed, an unfinished frame) vanish quietly
@@ -667,7 +780,9 @@ local function syncUnits()
 			if live[r.id] == u then live[r.id] = nil end
 		end
 	end
-	for i = 1, #units do
+	local list = activeUnits()
+	for k = 1, #list do
+		local i = list[k]
 		local r = units[i]
 		if alive(r, t) then
 			local u = spawned[i]
@@ -675,7 +790,7 @@ local function syncUnits()
 				u = spawnUnit(i, r)
 				spawned[i] = u
 				if u then live[r.id] = u end
-				r.on, r.moving, r.target_type, r.hidden = nil, nil, nil, nil
+				r.on, r.moving, r.velocity, r.target_type, r.hidden = nil, nil, nil, nil, nil
 				r.work_cmd, r.work_target, r.work_power = nil, nil, nil
 			end
 			if u then
