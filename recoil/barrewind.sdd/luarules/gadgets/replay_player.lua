@@ -57,7 +57,7 @@ end
 
 local M = VFS.Include("replay/meta.lua")
 local floor = math.floor
-local U32, F32 = VFS.UnpackU32, VFS.UnpackF32
+local U16, U32, F32 = VFS.UnpackU16, VFS.UnpackU32, VFS.UnpackF32
 local CreateUnit, DestroyUnit = Spring.CreateUnit, Spring.DestroyUnit
 local MoveCtrl = Spring.MoveCtrl
 local SetUnitDirection, SetUnitHealth = Spring.SetUnitDirection, Spring.SetUnitHealth
@@ -824,19 +824,17 @@ local function terrainKey(i)
 	return locate("terrain", i, 0)
 end
 
+-- x and z read apart: packed into one u32 they pass 2^24, past what a float holds exactly
+local function setTerrain(i, height_at)
+	local str, pos = terrainKey(i)
+	SetHeightMap(U16(str, pos + 4) * SQUARE, U16(str, pos + 6) * SQUARE, F32(str, pos + height_at))
+end
+
 local function applyTerrain()
 	if terrain_from < terrain_to then
-		for i = terrain_from, terrain_to - 1 do
-			local str, pos = terrainKey(i)
-			local xz = U32(str, pos + 4)
-			SetHeightMap((xz % 65536) * SQUARE, floor(xz / 65536) * SQUARE, F32(str, pos + 8))
-		end
+		for i = terrain_from, terrain_to - 1 do setTerrain(i, 8) end
 	else
-		for i = terrain_from - 1, terrain_to, -1 do
-			local str, pos = terrainKey(i)
-			local xz = U32(str, pos + 4)
-			SetHeightMap((xz % 65536) * SQUARE, floor(xz / 65536) * SQUARE, F32(str, pos + 12))
-		end
+		for i = terrain_from - 1, terrain_to, -1 do setTerrain(i, 12) end
 	end
 end
 
