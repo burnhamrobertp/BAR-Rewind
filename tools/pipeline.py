@@ -337,7 +337,7 @@ def parse(cfg, demo):
                 if time.time() - started > 7200:
                     proc.kill()
                 time.sleep(1)
-                frame = last_dump_frame(log) or last_dump_frame(bar / "infolog.txt")
+                frame = last_dump_frame(log) or last_dump_frame(fresh(bar / "infolog.txt", started))
                 # a recording the engine cannot play sits in the pregame lobby forever
                 if not frame and time.time() - started > 300:
                     proc.kill()
@@ -403,7 +403,18 @@ def last_load_message(log):
     return text.decode(errors="replace")
 
 
+def fresh(path, since):
+    """`path` if it was written since `since`, else None: BAR's infolog.txt still holds the last run's
+    frames until the engine starts writing it."""
+    try:
+        return path if path.stat().st_mtime >= since else None
+    except OSError:
+        return None
+
+
 def last_dump_frame(log):
+    if log is None:
+        return None
     try:
         with open(log, "rb") as f:
             f.seek(max(0, f.seek(0, 2) - 65536))
