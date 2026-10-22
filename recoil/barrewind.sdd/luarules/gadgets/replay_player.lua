@@ -60,7 +60,7 @@ local floor = math.floor
 local U16, U32, F32 = VFS.UnpackU16, VFS.UnpackU32, VFS.UnpackF32
 local CreateUnit, DestroyUnit = Spring.CreateUnit, Spring.DestroyUnit
 local MoveCtrl = Spring.MoveCtrl
-local SetUnitDirection, SetUnitHealth = Spring.SetUnitDirection, Spring.SetUnitHealth
+local SetUnitDirection, SetUnitHealth, GetUnitHealth = Spring.SetUnitDirection, Spring.SetUnitHealth, Spring.GetUnitHealth
 local CallAsUnit = Spring.UnitScript.CallAsUnit
 local Turn, Move = Spring.UnitScript.Turn, Spring.UnitScript.Move
 local ALIVE_FOREVER = 4294967295
@@ -476,6 +476,9 @@ local liveFeatures = {} -- replay feature id -> engine feature id, for reclaim t
 -- the shot until this frame (engine unit id -> frame); a recorded target takes over at once
 local shotUntil = {}
 local SHOT_HOLD = 15
+-- engine unit ids a builder was last seen reclaiming
+local reclaiming = {}
+local CMD_RECLAIM, MAX_UNITS = CMD.RECLAIM, Game.maxUnits
 
 -- a builder's recorded work (task, target, build power) as unit rules params: BAR's nano spray
 -- reads them through the Spring.GetUnitWorkerTask override in aaa_replay_worker_task.lua
@@ -516,6 +519,7 @@ local function work(u, r, g)
 		end
 		if target ~= 0 then cmd, power = g[5], g[7] end
 	end
+	if cmd == CMD_RECLAIM and target < MAX_UNITS then reclaiming[target] = true end
 	if target ~= r.work_target then
 		if target ~= 0 then
 			startBuilding(u, target)
@@ -652,10 +656,13 @@ local function syncUnits()
 		local u = spawned[i]
 		if u and not alive(r, t) then
 			if Spring.ValidUnitID(u) then
-				-- died just now while watching: the engine's death explosion; otherwise vanish quietly
-				local died_now = watching() and r.died > last_t and r.died <= t
-				DestroyUnit(u, false, not died_now)
+				-- killed just now while watching: the engine's death explosion; otherwise (rewound past,
+				-- reclaimed, an unfinished frame) vanish quietly
+				local _, _, _, _, build = GetUnitHealth(u)
+				local killed = watching() and r.died > last_t and r.died <= t and not reclaiming[u] and build >= 1
+				DestroyUnit(u, false, not killed)
 			end
+			reclaiming[u] = nil
 			spawned[i] = nil
 			if live[r.id] == u then live[r.id] = nil end
 		end
@@ -686,6 +693,7 @@ local function syncUnits()
 				if r.rebuild then
 					r.rebuild = nil
 					DestroyUnit(u, false, true)
+					reclaiming[u] = nil
 					if live[r.id] == u then live[r.id] = nil end
 					u = spawnUnit(i, r)
 					spawned[i] = u
