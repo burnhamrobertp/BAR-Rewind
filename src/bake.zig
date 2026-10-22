@@ -456,6 +456,7 @@ pub fn main(init: std.process.Init) !void {
         } else try b.meta.appendSlice(gpa, "[]");
     }
     try b.meta.append(gpa, '}');
+    const meta = try utf8Json(gpa, b.meta.items);
 
     // deaths: gone at the sample after the last one it was seen in; seen in the last one = alive
     const died = struct {
@@ -539,7 +540,7 @@ pub fn main(init: std.process.Init) !void {
         .counts = undefined,
     };
     const sections = .{
-        b.meta.items,     units.items,      transforms.items,  statuses.items,        tracks.items,
+        meta,             units.items,      transforms.items,  statuses.items,        tracks.items,
         b.features.items, projectiles.items, projectile_keys.items, pose_keys.items, targets.items,
         b.terrain.items, queues.items, b.queue_items.items, team_keys.items,
         cursor_tracks.items, cursor_keys.items, camera_keys.items, camera_values.items,
@@ -607,15 +608,70 @@ fn isAny(name: []const u8, names: []const []const u8) bool {
 /// `s` as a double-quoted Lua string literal
 fn luaString(w: *std.Io.Writer, s: []const u8) !void {
     try w.writeByte('"');
-    for (s) |c| switch (c) {
-        '"' => try w.writeAll("\\\""),
-        '\\' => try w.writeAll("\\\\"),
-        '\n' => try w.writeAll("\\n"),
-        '\r' => try w.writeAll("\\r"),
-        0...9, 11, 12, 14...31, 127 => try w.print("\\{d:0>3}", .{c}),
-        else => try w.writeByte(c),
-    };
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (byteStandIn(s[i..])) |byte| {
+            try w.writeByte(byte);
+            i += 2;
+            continue;
+        }
+        switch (s[i]) {
+            '"' => try w.writeAll("\\\""),
+            '\\' => try w.writeAll("\\\\"),
+            '\n' => try w.writeAll("\\n"),
+            '\r' => try w.writeAll("\\r"),
+            0...9, 11, 12, 14...31, 127 => try w.print("\\{d:0>3}", .{s[i]}),
+            else => try w.writeByte(s[i]),
+        }
+    }
     try w.writeByte('"');
+}
+
+/// The dump widget writes Lua strings' bytes as they are, and BAR's colour codes (byte 255, then three
+/// colour bytes) are not UTF-8, which JSON has to be. Each byte that isn't part of valid UTF-8 stands
+/// in as private-use code point U+F700 + byte, and luaString writes the byte back.
+const stand_in_base = 0xF700;
+
+fn byteStandIn(s: []const u8) ?u8 {
+    // U+F780..U+F7FF in UTF-8: EF 9E/9F xx
+    if (s.len < 3 or s[0] != 0xEF or (s[1] != 0x9E and s[1] != 0x9F) or s[2] & 0xC0 != 0x80) return null;
+    const cp = (@as(u21, s[1] & 0x3F) << 6 | (s[2] & 0x3F)) | 0xF000;
+
+    return if (cp >= stand_in_base + 0x80) @intCast(cp - stand_in_base) else null;
+}
+
+/// `json` with every byte that isn't valid UTF-8 replaced by its stand-in, as a \u escape
+fn utf8Json(gpa: std.mem.Allocator, json: []const u8) ![]const u8 {
+    if (std.unicode.utf8ValidateSlice(json)) return json;
+    var out: List(u8) = try .initCapacity(gpa, json.len + 64);
+    var i: usize = 0;
+    while (i < json.len) {
+        const n = std.unicode.utf8ByteSequenceLength(json[i]) catch 0;
+        if (n > 0 and i + n <= json.len and std.unicode.utf8ValidateSlice(json[i..][0..n])) {
+            try out.appendSlice(gpa, json[i..][0..n]);
+            i += n;
+            continue;
+        }
+        var escape: [6]u8 = undefined;
+        try out.appendSlice(gpa, try std.fmt.bufPrint(&escape, "\\u{X:0>4}", .{@as(u21, stand_in_base) + json[i]}));
+        i += 1;
+    }
+
+    return out.items;
+}
+
+test "colour codes survive the JSON and come back as bytes" {
+    const gpa = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const raw = "{\"label\":\"\xff\xff\x7fL\xf0\x9f\x8e\xafAttack \xc3\xa9\"}";
+    const json = try utf8Json(arena.allocator(), raw);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(json));
+    const parsed = try std.json.parseFromSliceLeaky(struct { label: []const u8 }, arena.allocator(), json, .{});
+    var lua: std.Io.Writer.Allocating = .init(arena.allocator());
+    try luaString(&lua.writer, parsed.label);
+    try std.testing.expectEqualStrings("\"\xff\xff\\127L\xf0\x9f\x8e\xafAttack \xc3\xa9\"", lua.written());
+    try std.testing.expectEqualStrings("{\"a\":\"plain\"}", try utf8Json(arena.allocator(), "{\"a\":\"plain\"}"));
 }
 
 /// Writes `<name>_w<w>_<chunk>.bin` (keys) and `<name>_w<w>_index.bin` (u32 curve, first, count)
@@ -844,7 +900,7 @@ pub const Meta = struct {
 };
 
 pub fn parseMeta(gpa: std.mem.Allocator, file: curves.File) !Meta {
-    return std.json.parseFromSliceLeaky(Meta, gpa, file.meta, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+    return std.json.parseFromSliceLeaky(Meta, gpa, try utf8Json(gpa, file.meta), .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
 }
 
 /// BAR's colour codes take floor(c * 255) as a byte: the recording's colours were bytes, so each
