@@ -26,7 +26,7 @@ local file = nil
 local lastPiece = {} -- [unitID][piece] = last written matrix, only changes are written
 local seenPieces = {} -- [defID] = true once its piece tree is written
 local aimPieces = {} -- [defID] = the pieces that aim: each weapon's muzzle piece and its parents up to the root
-local features = {} -- [featureID] = true
+local features = {} -- [featureID] = the sample that last saw it
 
 -- json -----------------------------------------------------------------------------------------
 
@@ -293,7 +293,9 @@ local function recordPieces(u, def, ps, np)
 				or abs(l[4] - m12) > 0.004 or abs(l[5] - m22) > 0.004 or abs(l[6] - m32) > 0.004
 				or abs(l[7] - m13) > 0.004 or abs(l[8] - m23) > 0.004 or abs(l[9] - m33) > 0.004
 				or abs(l[10] - tx) > 0.05 or abs(l[11] - ty) > 0.05 or abs(l[12] - tz) > 0.05 then
-				last[p] = { m11, m21, m31, m12, m22, m32, m13, m23, m33, tx, ty, tz }
+				if not l then l = {}; last[p] = l end
+				l[1], l[2], l[3], l[4], l[5], l[6] = m11, m21, m31, m12, m22, m32
+				l[7], l[8], l[9], l[10], l[11], l[12] = m13, m23, m33, tx, ty, tz
 				ps[np + 1], ps[np + 2] = u, p
 				ps[np + 3], ps[np + 4], ps[np + 5], ps[np + 6] = m11, m21, m31, m12
 				ps[np + 7], ps[np + 8], ps[np + 9], ps[np + 10] = m22, m32, m13, m23
@@ -305,26 +307,28 @@ local function recordPieces(u, def, ps, np)
 	return np
 end
 
+-- which sample last saw each unit, instead of a fresh set of the living every sample
+local seenAt, sampleNo = {}, 0
+
 local function unitsSample(us, ps)
 	local units = S.GetAllUnits()
-	local alive = {}
-	local nu, np = #us, #ps
+	sampleNo = sampleNo + 1
+	local nu, np = 0, 0
 	for i = 1, #units do
 		local u = units[i]
 		local x, y, z = S.GetUnitPosition(u)
 		-- a killed unit lingers while its death animation runs: the player's kill replays that
 		if x and not S.GetUnitIsDead(u) then
-			alive[u] = true
+			seenAt[u] = sampleNo
 			local def = S.GetUnitDefID(u) or 0
 			local fx, fy, fz, _, _, _, ux, uy, uz = S.GetUnitDirection(u)
 			local hp, maxHp, _, _, build = S.GetUnitHealth(u)
-			local states = S.GetUnitStates(u)
 			us[nu + 1], us[nu + 2], us[nu + 3] = u, def, S.GetUnitTeam(u) or 0
 			us[nu + 4], us[nu + 5], us[nu + 6] = x, y, z
 			us[nu + 7], us[nu + 8], us[nu + 9] = fx or 0, fy or 0, fz or 1
 			us[nu + 10], us[nu + 11], us[nu + 12] = ux or 0, uy or 1, uz or 0
 			us[nu + 13], us[nu + 14], us[nu + 15] = hp or 0, maxHp or 0, build or 1
-			us[nu + 16] = (states and states.active == false) and 0 or 1
+			us[nu + 16] = S.GetUnitIsActive(u) == false and 0 or 1
 			-- what the first weapon aims at: 0 nothing, 1 unit (id), 2 ground (xyz), 3 projectile
 			local tt, _, target = S.GetUnitWeaponTarget(u, 1)
 			local ta, tb, tc = 0, 0, 0
@@ -352,16 +356,20 @@ local function unitsSample(us, ps)
 			np = recordPieces(u, def, ps, np)
 		end
 	end
-	for u in pairs(lastPiece) do if not alive[u] then lastPiece[u] = nil end end
+	for u in pairs(lastPiece) do
+		if seenAt[u] ~= sampleNo then
+			lastPiece[u], seenAt[u] = nil, nil
+		end
+	end
+
+	return nu, np
 end
 
 local function featuresSample(added, removed)
-	local now = {}
 	local all = S.GetAllFeatures()
-	local n = 0
+	local n, nr = 0, 0
 	for i = 1, #all do
 		local f = all[i]
-		now[f] = true
 		if not features[f] then
 			local x, y, z = S.GetFeaturePosition(f)
 			local dx, dy, dz = S.GetFeatureDirection(f)
@@ -370,9 +378,17 @@ local function featuresSample(added, removed)
 			added[n + 6], added[n + 7], added[n + 8] = dx or 0, dy or 0, dz or 1
 			n = n + FEATURE_ROW
 		end
+		features[f] = sampleNo
 	end
-	for f in pairs(features) do if not now[f] then removed[#removed + 1] = f end end
-	features = now
+	for f, at in pairs(features) do
+		if at ~= sampleNo then
+			nr = nr + 1
+			removed[nr] = f
+			features[f] = nil
+		end
+	end
+
+	return n, nr
 end
 
 local function projectileRow(p, rows, n)
@@ -393,6 +409,8 @@ local function projectilesSample(ps)
 		or S.GetProjectilesInRectangle(0, 0, Game.mapSizeX, Game.mapSizeZ, false, false)
 	local n = 0
 	for i = 1, #all do n = projectileRow(all[i], ps, n) end
+
+	return n
 end
 
 -- terrain: heightmap points inside the rectangles the engine reports as changed, written when they
@@ -426,42 +444,69 @@ local function terrainSample(ts)
 		end
 	end
 	dirty = {}
+
+	return n
 end
 
--- what each builder plans to build: its queued build orders, written when they change
+-- what each builder plans to build: its queued build orders, written when they change. Only
+-- builders the command call-ins flagged are read, and every builder every QUEUE_SWEEP frames in
+-- case an order changed some other way
 local lastQueue = {} -- [unitID] = string of the last written queue
-local function queuesSample(qs)
-	local units = S.GetAllUnits()
-	local n = 0
-	local alive = {}
-	for i = 1, #units do
-		local u = units[i]
-		if isBuilder[S.GetUnitDefID(u) or 0] then
-			alive[u] = true
-			local cmds = S.GetUnitCommands(u, 200) or {}
-			local items = {}
-			for k = 1, #cmds do
-				local c = cmds[k]
-				if c.id < 0 and c.params[3] then
-					items[#items + 1] = format("%d %d %d %d", -c.id, c.params[1], c.params[3], c.params[4] or 0)
-				end
-			end
-			local key = concat(items, ",")
-			if key ~= (lastQueue[u] or "") then
-				lastQueue[u] = key
-				qs[n + 1], qs[n + 2], qs[n + 3] = u, S.GetUnitTeam(u) or 0, #items
-				n = n + 3
-				for k = 1, #cmds do
-					local c = cmds[k]
-					if c.id < 0 and c.params[3] then
-						qs[n + 1], qs[n + 2], qs[n + 3], qs[n + 4] = -c.id, c.params[1], c.params[3], c.params[4] or 0
-						n = n + 4
-					end
-				end
-			end
+local queueDirty = {}
+local QUEUE_SWEEP = 300
+
+function widget:UnitCommand(u) queueDirty[u] = true end
+function widget:UnitCmdDone(u) queueDirty[u] = true end
+function widget:UnitIdle(u) queueDirty[u] = true end
+function widget:UnitCreated(u) queueDirty[u] = true end
+function widget:UnitFinished(u) queueDirty[u] = true end
+function widget:UnitGiven(u) queueDirty[u] = true end
+
+local function queueRows(u, qs, n)
+	local cmds = S.GetUnitCommands(u, 200) or {}
+	local items = {}
+	for k = 1, #cmds do
+		local c = cmds[k]
+		if c.id < 0 and c.params[3] then
+			items[#items + 1] = format("%d %d %d %d", -c.id, c.params[1], c.params[3], c.params[4] or 0)
 		end
 	end
-	for u in pairs(lastQueue) do if not alive[u] then lastQueue[u] = nil end end
+	local key = concat(items, ",")
+	if key == (lastQueue[u] or "") then
+		return n
+	end
+
+	lastQueue[u] = key
+	qs[n + 1], qs[n + 2], qs[n + 3] = u, S.GetUnitTeam(u) or 0, #items
+	n = n + 3
+	for k = 1, #cmds do
+		local c = cmds[k]
+		if c.id < 0 and c.params[3] then
+			qs[n + 1], qs[n + 2], qs[n + 3], qs[n + 4] = -c.id, c.params[1], c.params[3], c.params[4] or 0
+			n = n + 4
+		end
+	end
+
+	return n
+end
+
+local function queuesSample(qs, sweep)
+	if sweep then
+		local units = S.GetAllUnits()
+		for i = 1, #units do queueDirty[units[i]] = true end
+		for u in pairs(lastQueue) do
+			if not S.ValidUnitID(u) or S.GetUnitIsDead(u) then lastQueue[u] = nil end
+		end
+	end
+	local n = 0
+	for u in pairs(queueDirty) do
+		queueDirty[u] = nil
+		if S.ValidUnitID(u) and not S.GetUnitIsDead(u) and isBuilder[S.GetUnitDefID(u) or 0] then
+			n = queueRows(u, qs, n)
+		end
+	end
+
+	return n
 end
 
 local bin = nil
@@ -509,20 +554,36 @@ function widget:CameraBroadcastEvent(playerID, state)
 	writeView(2, playerID, values)
 end
 
+-- one set of row buffers for the whole recording, each cut back to what this frame filled
+local rows = { {}, {}, {}, {}, {}, {}, {} }
+local filled = { 0, 0, 0, 0, 0, 0, 0 }
+
+local function writeRows(k, n)
+	local r = rows[k]
+	for i = n + 1, filled[k] do r[i] = nil end
+	filled[k] = n
+	if n > 0 then bin:write(VFS.PackF32(r)) end
+end
+
 local function writeFrame(frame)
-	local us, ps, fa, fr, pr, ts, qs = {}, {}, {}, {}, {}, {}, {}
+	local us, ps, fa, fr, pr, ts, qs = rows[1], rows[2], rows[3], rows[4], rows[5], rows[6], rows[7]
+	local nu, np, nfa, nfr, nq = 0, 0, 0, 0, 0
 	if frame % SAMPLE_EVERY == 0 then
-		unitsSample(us, ps)
-		featuresSample(fa, fr)
+		nu, np = unitsSample(us, ps)
+		nfa, nfr = featuresSample(fa, fr)
 	end
-	if frame % QUEUE_EVERY == 0 then queuesSample(qs) end
-	projectilesSample(pr)
-	terrainSample(ts)
-	bin:write(VFS.PackU32(frame, #us / UNIT_ROW, #ps / PIECE_ROW, #fa / FEATURE_ROW, #fr, #pr / PROJECTILE_ROW,
-		#ts / TERRAIN_ROW, #qs))
-	for _, rows in ipairs({ us, ps, fa, fr, pr, ts, qs }) do
-		if #rows > 0 then bin:write(VFS.PackF32(rows)) end
-	end
+	if frame % QUEUE_EVERY == 0 then nq = queuesSample(qs, frame % QUEUE_SWEEP == 0) end
+	local npr = projectilesSample(pr)
+	local nts = terrainSample(ts)
+	bin:write(VFS.PackU32(frame, nu / UNIT_ROW, np / PIECE_ROW, nfa / FEATURE_ROW, nfr, npr / PROJECTILE_ROW,
+		nts / TERRAIN_ROW, nq))
+	writeRows(1, nu)
+	writeRows(2, np)
+	writeRows(3, nfa)
+	writeRows(4, nfr)
+	writeRows(5, npr)
+	writeRows(6, nts)
+	writeRows(7, nq)
 end
 
 -- lifecycle ------------------------------------------------------------------------------------
