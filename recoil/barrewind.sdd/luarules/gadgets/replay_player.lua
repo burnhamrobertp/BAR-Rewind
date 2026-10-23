@@ -57,7 +57,7 @@ end
 
 local M = VFS.Include("replay/meta.lua")
 local floor = math.floor
-local U16, U32, F32 = VFS.UnpackU16, VFS.UnpackU32, VFS.UnpackF32
+local U16, U32, S32, F32 = VFS.UnpackU16, VFS.UnpackU32, VFS.UnpackS32, VFS.UnpackF32
 local CreateUnit, DestroyUnit = Spring.CreateUnit, Spring.DestroyUnit
 local MoveCtrl = Spring.MoveCtrl
 local SetUnitDirection, SetUnitHealth, GetUnitHealth = Spring.SetUnitDirection, Spring.SetUnitHealth, Spring.GetUnitHealth
@@ -314,6 +314,12 @@ local function loadRecords()
 		end
 		units[#units + 1] = u
 	end
+	-- each unit's command queue records, in time order, are contiguous in queues
+	for i = 0, (M.sections.queues and M.sections.queues.count or 0) - 1 do
+		local u = units[u32("queues", i, 0) + 1]
+		u.q_first = u.q_first or i
+		u.q_count = (u.q_count or 0) + 1
+	end
 	-- older curves have no team changes: every unit keeps the team it was built for
 	local tk = M.sections.team_keys
 	for i = 0, (tk and tk.count or 0) - 1 do
@@ -443,9 +449,9 @@ local function spawnUnit(i, r)
 	local u = CreateUnit(name, v[1], v[2], v[3], 0, team, frame, true, nil, frame and builder or nil)
 	if not u then return warnOnce("CreateUnit failed: " .. name .. " team " .. team) end
 	MoveCtrl.Enable(u)
-	-- for LuaUI (replay_orders): the record it plays, 0-based as queues name it, and the replay's id
-	SetUnitRulesParam(u, "replay_index", r.index, PUBLIC)
-	SetUnitRulesParam(u, "replay_id", r.id, PUBLIC)
+	-- builders carry their recorded orders (syncOrders) but must never reach them: out of range
+	-- they only ask MoveCtrl to move, so they never build, repair, reclaim or capture anything
+	if UnitDefNames[name].isBuilder then Spring.SetUnitBuildParams(u, "buildDistance", -1e6) end
 	-- BAR's own script animates: weapons never fire
 	for w = 1, #(UnitDefs[UnitDefNames[name].id].weapons or {}) do
 		Spring.SetUnitWeaponState(u, w, "reloadState", 1e8)
@@ -750,6 +756,78 @@ local function place(u, r)
 	animate(u, r, v, posed)
 end
 
+-- command queues: each unit gets its recorded orders, so the engine draws them for the selected
+-- units and BAR's widgets (builder queue blueprints, command effects) see them as they did live.
+-- MoveCtrl, hold fire and an unreachable build distance keep it from carrying them out.
+local AREA = {}
+for _, name in ipairs({ "RECLAIM", "REPAIR", "RESURRECT", "CAPTURE", "RESTORE", "AREA_ATTACK", "LOAD_UNITS", "UNLOAD_UNITS" }) do
+	if CMD[name] then AREA[CMD[name]] = true end
+end
+local QUEUED = { "shift" }
+
+-- one recorded order's params, or nil when what it targets is not in the replay at t
+local function orderParams(i)
+	local str, pos = locate("queue_items", i, 0)
+	local cmd, target = S32(str, pos), S32(str, pos + 16)
+	local x, y, z, extra = F32(str, pos + 4), F32(str, pos + 8), F32(str, pos + 12), F32(str, pos + 20)
+	if target > 0 then
+		if live[target] then return cmd, { live[target] } end
+		-- a unit out of sight or gone: attack where it was
+		if cmd == CMD.ATTACK then return cmd, { x, y, z } end
+		return nil
+	elseif target < 0 then
+		local f = liveFeatures[-target - 1]
+
+		return f and cmd, f and { f + MAX_UNITS }
+	end
+	if cmd < 0 or (AREA[cmd] and extra > 0) then return cmd, { x, y, z, extra } end
+
+	return cmd, { x, y, z }
+end
+
+-- whether unit u's queue already holds `orders` (the engine snaps build positions a little)
+local function holds(u, orders)
+	local queue = Spring.GetUnitCommands(u, -1) or {}
+	if #queue ~= #orders then return false end
+	for k = 1, #queue do
+		local c, o = queue[k], orders[k]
+		if c.id ~= o[1] or #c.params ~= #o[2] then return false end
+		for p = 1, #c.params do
+			if math.abs(c.params[p] - o[2][p]) > 16 then return false end
+		end
+	end
+
+	return true
+end
+
+-- gives unit u the queue recorded for r at t, when that record changed since it was last given
+local function syncOrders(u, r)
+	if not r.q_first or (r.orders_u == u and r.q_from <= t and t < r.q_to) then return end
+	local a, b = -1, r.q_count
+	while b - a > 1 do
+		local mid = floor((a + b) / 2)
+		if u32("queues", r.q_first + mid, 4) <= t then a = mid else b = mid end
+	end
+	r.q_from = a >= 0 and u32("queues", r.q_first + a, 4) or -math.huge
+	r.q_to = a + 1 < r.q_count and u32("queues", r.q_first + a + 1, 4) or math.huge
+	if r.orders_u == u and r.orders_at == a then return end
+	local first_order = r.orders_u ~= u
+	r.orders_u, r.orders_at = u, a
+	local orders = {}
+	if a >= 0 then
+		local first = u32("queues", r.q_first + a, 8)
+		for i = first, first + u32("queues", r.q_first + a, 12) - 1 do
+			local cmd, params = orderParams(i)
+			if cmd then orders[#orders + 1] = { cmd, params, #orders > 0 and QUEUED or 0 } end
+		end
+	end
+	if #orders == 0 then
+		if not first_order then Spring.GiveOrderToUnit(u, CMD.STOP, {}, 0) end
+	elseif not holds(u, orders) then
+		Spring.GiveOrderArrayToUnit(u, orders)
+	end
+end
+
 -- the records alive at some point in the window holding t, in record order
 local active, active_w = {}, nil
 local function activeUnits()
@@ -823,6 +901,11 @@ local function syncUnits()
 				end
 			end
 		end
+	end
+	-- once every unit is in place, so orders find their targets
+	for k = 1, #list do
+		local u = spawned[list[k]]
+		if u then syncOrders(u, units[list[k]]) end
 	end
 end
 
