@@ -46,6 +46,14 @@ local textRight = 0
 local dragging = false
 local laidOut = nil
 
+-- frames other widgets point out on the timeline, per widget:
+-- WG.replay_timeline.setMarks(owner, { { f = frame, color = { r, g, b, a }, text = tooltip }, ... })
+local marksBy = {}
+
+local function setMarks(owner, marks)
+	marksBy[owner] = marks
+end
+
 local function state()
 	return GetParam("replay_t") or 0, GetParam("replay_first") or 0, GetParam("replay_last") or 1,
 		(GetParam("replay_playing") or 0) == 1, GetParam("replay_speed") or 1
@@ -149,9 +157,11 @@ end
 
 function widget:Initialize()
 	widget:ViewResize()
+	WG.replay_timeline = { setMarks = setMarks }
 end
 
 function widget:Shutdown()
+	WG.replay_timeline = nil
 	removeTooltips()
 	if WG.guishader then WG.guishader.RemoveDlist("replay_timeline") end
 	if guishaderList then gl.DeleteList(guishaderList) end
@@ -233,6 +243,37 @@ local function drawMarks(first, last)
 	font:End()
 end
 
+local function markX(m, first, last)
+	return slider[1] + (slider[3] - slider[1]) * (m.f - first) / mathMax(last - first, 1)
+end
+
+-- the mark under the mouse, if any
+local function markAt(mx, my, first, last)
+	if my < slider[2] - 4 * scale or my > slider[4] + 10 * scale then return nil end
+	local best, bestDist = nil, 4 * scale
+	for _, marks in pairs(marksBy) do
+		for _, m in ipairs(marks) do
+			local d = mathAbs(markX(m, first, last) - mx)
+			if d <= bestDist then best, bestDist = m, d end
+		end
+	end
+
+	return best
+end
+
+-- a short coloured tick above the bar per mark
+local function drawEventMarks(first, last, hovered)
+	local w = mathMax(1, mathFloor(scale))
+	for _, marks in pairs(marksBy) do
+		for _, m in ipairs(marks) do
+			local x = mathFloor(markX(m, first, last))
+			local c = m.color or { 1, 1, 1, 0.9 }
+			local h = (m == hovered and 10 or 7) * scale
+			RectRound(x - w, slider[4] + mathFloor(1 * scale), x + w, slider[4] + h, 0, 0, 0, 0, 0, c)
+		end
+	end
+end
+
 local function drawSlider(f)
 	local px, py, sx, sy = slider[1], slider[2], slider[3], slider[4]
 	local cs = (sy - py) * 0.5
@@ -275,6 +316,11 @@ function widget:DrawScreen()
 
 	drawMarks(first, last)
 	drawSlider((t - first) / mathMax(last - first, 1))
+	local hovered = markAt(mx, my, first, last)
+	drawEventMarks(first, last, hovered)
+	if hovered and hovered.text and WG.tooltip then
+		WG.tooltip.ShowTooltip("replay_timeline_mark", hovered.text, nil, nil, clock(hovered.f))
+	end
 
 	local size = textSize()
 	local y = (top + bottom) / 2 - size * 0.35
@@ -298,6 +344,13 @@ function widget:MousePress(mx, my, button)
 			press(name)
 			return true
 		end
+	end
+	-- a mark clicked jumps to its frame
+	local _, first, last = state()
+	local m = markAt(mx, my, first, last)
+	if m then
+		Send("replay:seek " .. m.f)
+		return true
 	end
 	if inRect(mx, my, { slider[1] - 6 * scale, bottom, slider[3] + 6 * scale, top }) then
 		dragging = true
