@@ -49,6 +49,7 @@ local laidOut = nil
 -- frames other widgets point out on the timeline, per widget:
 -- WG.replay_timeline.setMarks(owner, { { f = frame, color = { r, g, b, a }, text = tooltip }, ... })
 local marksBy = {}
+local markTooltip = false
 
 local function setMarks(owner, marks)
 	marksBy[owner] = marks
@@ -261,17 +262,17 @@ local function markAt(mx, my, first, last)
 	return best
 end
 
--- per mark, a coloured line through the bar with a flag on top
+-- per mark, a pin through the bar: a shaded stem and a knob like the slider's, in the mark's colour
 local function drawEventMarks(first, last, hovered)
 	local w = mathMax(1, mathFloor(scale))
-	local flag = mathFloor(4 * scale)
+	local head = slider[4] + mathFloor(8 * scale)
 	for _, marks in pairs(marksBy) do
 		for _, m in ipairs(marks) do
 			local x = mathFloor(markX(m, first, last))
 			local c = m.color or { 1, 1, 1, 0.9 }
-			local top = slider[4] + mathFloor((m == hovered and 14 or 10) * scale)
-			RectRound(x - w, slider[2] - mathFloor(2 * scale), x + w, top, 0, 0, 0, 0, 0, c)
-			RectRound(x - flag, top - flag * 2, x + flag, top, flag * 0.5, 1, 1, 1, 1, c)
+			RectRound(x - w, slider[2] - mathFloor(2 * scale), x + w, head, 0, 0, 0, 0, 0,
+				{ c[1] * 0.45, c[2] * 0.45, c[3] * 0.45, c[4] }, c)
+			UiSliderKnob(x, head, (m == hovered and 5 or 3.5) * scale, c)
 		end
 	end
 end
@@ -320,6 +321,11 @@ function widget:DrawScreen()
 	drawSlider((t - first) / mathMax(last - first, 1))
 	local hovered = markAt(mx, my, first, last)
 	drawEventMarks(first, last, hovered)
+	-- a hovered mark's tooltip replaces the timeline's own
+	if WG.tooltip and (hovered ~= nil) ~= markTooltip then
+		markTooltip = hovered ~= nil
+		if markTooltip then WG.tooltip.RemoveTooltip("replay_timeline") else addTooltips() end
+	end
 	if hovered and hovered.text and WG.tooltip then
 		WG.tooltip.ShowTooltip("replay_timeline_mark", hovered.text, nil, nil, clock(hovered.f))
 	end
