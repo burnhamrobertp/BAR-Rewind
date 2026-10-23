@@ -249,8 +249,8 @@ end
 
 -- the mark under the mouse, if any
 local function markAt(mx, my, first, last)
-	if my < slider[2] - 4 * scale or my > slider[4] + 10 * scale then return nil end
-	local best, bestDist = nil, 4 * scale
+	if my < slider[2] - 4 * scale or my > slider[4] + 14 * scale then return nil end
+	local best, bestDist = nil, 5 * scale
 	for _, marks in pairs(marksBy) do
 		for _, m in ipairs(marks) do
 			local d = mathAbs(markX(m, first, last) - mx)
@@ -261,15 +261,17 @@ local function markAt(mx, my, first, last)
 	return best
 end
 
--- a short coloured tick above the bar per mark
+-- per mark, a coloured line through the bar with a flag on top
 local function drawEventMarks(first, last, hovered)
 	local w = mathMax(1, mathFloor(scale))
+	local flag = mathFloor(4 * scale)
 	for _, marks in pairs(marksBy) do
 		for _, m in ipairs(marks) do
 			local x = mathFloor(markX(m, first, last))
 			local c = m.color or { 1, 1, 1, 0.9 }
-			local h = (m == hovered and 10 or 7) * scale
-			RectRound(x - w, slider[4] + mathFloor(1 * scale), x + w, slider[4] + h, 0, 0, 0, 0, 0, c)
+			local top = slider[4] + mathFloor((m == hovered and 14 or 10) * scale)
+			RectRound(x - w, slider[2] - mathFloor(2 * scale), x + w, top, 0, 0, 0, 0, 0, c)
+			RectRound(x - flag, top - flag * 2, x + flag, top, flag * 0.5, 1, 1, 1, 1, c)
 		end
 	end
 end
