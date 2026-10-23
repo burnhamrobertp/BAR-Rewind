@@ -402,12 +402,13 @@ pub fn main(init: std.process.Init) !void {
     if (args.len == 4 and std.mem.eql(u8, args[1], "export-lua")) return exportLua(io, gpa, args[2], args[3]);
     if (args.len == 4 and std.mem.eql(u8, args[1], "start-script")) return writeStartScript(io, gpa, args[2], args[3]);
     if (args.len == 3 and std.mem.eql(u8, args[1], "info")) return printInfo(io, gpa, args[2]);
+    if (args.len == 3 and std.mem.eql(u8, args[1], "events")) return printEvents(io, gpa, args[2]);
     if (args.len == 2 and std.mem.eql(u8, args[1], "version")) {
         std.log.info("curves version {d}", .{curves.version});
         return;
     }
     if (args.len != 4) {
-        std.log.err("usage: bake <bardump.jsonl> <out.curves> <demo.sdfz> | bake export-lua <in.curves> <out-dir> | bake start-script <in.curves> <out.txt> | bake info <in.curves> | bake version", .{});
+        std.log.err("usage: bake <bardump.jsonl> <out.curves> <demo.sdfz> | bake export-lua <in.curves> <out-dir> | bake start-script <in.curves> <out.txt> | bake info <in.curves> | bake events <in.curves> | bake version", .{});
         std.process.exit(2);
     }
     const demo = try readDemo(io, gpa, args[3]);
@@ -1087,5 +1088,23 @@ fn printInfo(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8) !void 
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(io, &buffer);
     try out.interface.print("engine={s}\ngame={s}\nmap={s}\n", .{ file.engine, scriptField(file.demo_script, "gametype"), meta.map.name });
+    try out.interface.flush();
+}
+
+/// The replay's events as a JSON array: frame, kind, the name of their team's player, text
+fn printEvents(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8) !void {
+    const file = try readCurves(io, gpa, curves_path);
+    const meta = try parseMeta(gpa, file);
+    const Listed = struct { f: u32, kind: []const u8, player: []const u8, text: []const u8 };
+    const list = try gpa.alloc(Listed, meta.events.len);
+    for (meta.events, list) |e, *o| {
+        var key: [16]u8 = undefined;
+        const team = meta.teams.map.get(try std.fmt.bufPrint(&key, "{d}", .{e.team}));
+        o.* = .{ .f = e.f, .kind = e.kind, .player = if (team) |t| t.leader orelse "" else "", .text = e.text };
+    }
+    var buffer: [4096]u8 = undefined;
+    var out = std.Io.File.stdout().writerStreaming(io, &buffer);
+    try out.interface.writeAll(try std.json.Stringify.valueAlloc(gpa, list, .{}));
+    try out.interface.writeAll("\n");
     try out.interface.flush();
 }

@@ -294,6 +294,15 @@ def curves_info(curves):
     return dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
 
 
+def curves_events(curves):
+    """The events other widgets recorded during the parse: [{f, kind, player, text}]."""
+    r = subprocess.run([str(bake_exe()), "events", str(curves)], capture_output=True, encoding="utf-8")
+    if r.returncode != 0:
+        raise RuntimeError(f"cannot read {curves}: " + r.stderr)
+
+    return json.loads(r.stdout)
+
+
 def parse(cfg, demo):
     """Generator: yields ("proc", Popen) once (kill it to cancel), then ("progress", pct, text).
     Leaves <out>/curves/<name>.curves; raises RuntimeError with the log path on failure."""
