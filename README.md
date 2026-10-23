@@ -2,7 +2,7 @@
 ### (Prototype)
 Rewind, pause and scrub [Beyond All Reason](https://www.beyondallreason.info/) replays, rendered by BAR itself.
 
-**[Download v0.4.0](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.4.0)** (Linux and Windows)
+**[Download v0.4.1](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.4.1)** (Linux and Windows)
 
 ### Jump anywhere
 
@@ -27,7 +27,7 @@ Up/Down change the speed. At 64x a whole match unwinds in seconds.
 Needs BAR installed and [Python 3](https://www.python.org/downloads/) (Windows: tick "Add to PATH").
 
 1. Download `bar-rewind-linux.tar.gz` or `bar-rewind-windows.zip` from the
-   [release](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.4.0) and extract it.
+   [release](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.4.1) and extract it.
 2. Run `bar-rewind` (Linux) or `bar-rewind.bat` (Windows). The app opens in your **browser**.
 3. Check the **BAR data folder** at the top. It's usually found on its own; if not, paste it and press Enter.
    It's the folder BAR keeps its data in, with `engine/`, `maps/` and `demos/` inside, not the install folder:
