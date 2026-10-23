@@ -27,6 +27,9 @@ pub fn build(b: *std.Build) void {
     });
     const run_pack = b.addRunArtifact(pack);
     run_pack.addDirectoryArg(b.path("recoil/barrewind.sdd"));
+    // the build cache keys a directory argument on its path, not its files: without this the player
+    // keeps the first mutator it was built with
+    run_pack.has_side_effects = true;
     const mutator_tar = run_pack.addOutputFileArg("mutator.tar");
     const player = b.addExecutable(.{
         .name = "bar-rewind",
