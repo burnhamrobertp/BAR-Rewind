@@ -120,6 +120,13 @@ function widget:MapDrawCmd(playerID, cmdType, px, py, pz, a, b, c)
 	line("marker", mark)
 end
 
+-- moments other widgets point out, for widgets of their own to show in playback:
+-- WG.replay_dump.event{ kind =, team =, x =, y =, z =, text = } records one at the current frame
+local function event(e)
+	line("event", { f = math.max(0, S.GetGameFrame()), kind = e.kind or "", team = e.team or -1,
+		x = e.x, y = e.y, z = e.z, text = e.text or "" })
+end
+
 -- one-time headers -----------------------------------------------------------------------------
 
 local function modelOf(def)
@@ -742,6 +749,7 @@ function widget:Initialize()
 	if S.IsReplay() and io.open(REQUEST, "r") then
 		S.SendCommands("setminspeed 100", "setmaxspeed 100", "setspeed 100")
 	end
+	WG.replay_dump = { event = event }
 end
 
 function widget:GameOver()
@@ -750,4 +758,5 @@ end
 
 function widget:Shutdown()
 	stop(false)
+	WG.replay_dump = nil
 end

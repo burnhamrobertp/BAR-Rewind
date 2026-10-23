@@ -74,6 +74,7 @@ const Bake = struct {
     pieces_meta: List(u8) = .empty,
     chat_meta: List(u8) = .empty,
     markers_meta: List(u8) = .empty,
+    events_meta: List(u8) = .empty,
     cameras_meta: List(u8) = .empty,
     /// per unit def: parent piece index (1-based, 0 = root) and original offset for each piece
     parents: std.AutoHashMapUnmanaged(u32, []const u32) = .empty,
@@ -354,7 +355,7 @@ fn addHeader(b: *Bake, line: []const u8) !void {
         return;
     }
     // one line per message or mark, collected into arrays
-    inline for (.{ .{ "\"chat\":", &b.chat_meta }, .{ "\"marker\":", &b.markers_meta }, .{ "\"camkeys\":", &b.cameras_meta } }) |pair| {
+    inline for (.{ .{ "\"chat\":", &b.chat_meta }, .{ "\"marker\":", &b.markers_meta }, .{ "\"event\":", &b.events_meta }, .{ "\"camkeys\":", &b.cameras_meta } }) |pair| {
         if (std.mem.startsWith(u8, inner, pair[0])) {
             try pair[1].append(gpa, if (pair[1].items.len == 0) '[' else ',');
             try pair[1].appendSlice(gpa, inner[pair[0].len..]);
@@ -453,7 +454,7 @@ pub fn main(init: std.process.Init) !void {
     if (b.pieces_meta.items.len > 0) try b.pieces_meta.append(gpa, ']') else try b.pieces_meta.appendSlice(gpa, "[]");
     try b.meta.appendSlice(gpa, if (b.meta.items.len == 0) "{\"pieces\":" else ",\"pieces\":");
     try b.meta.appendSlice(gpa, b.pieces_meta.items);
-    inline for (.{ .{ ",\"chat\":", &b.chat_meta }, .{ ",\"markers\":", &b.markers_meta }, .{ ",\"cameras\":", &b.cameras_meta } }) |pair| {
+    inline for (.{ .{ ",\"chat\":", &b.chat_meta }, .{ ",\"markers\":", &b.markers_meta }, .{ ",\"events\":", &b.events_meta }, .{ ",\"cameras\":", &b.cameras_meta } }) |pair| {
         try b.meta.appendSlice(gpa, pair[0]);
         if (pair[1].items.len > 0) {
             try pair[1].append(gpa, ']');
@@ -850,6 +851,15 @@ pub fn exportFile(io: std.Io, gpa: std.mem.Allocator, file: curves.File, out_dir
         try luaString(w, m.label);
         try w.writeAll(" },\n");
     }
+    try w.writeAll("  },\n  events = {\n");
+    for (meta.events) |e| {
+        try w.print("    {{ f = {d}, team = {d}, kind = ", .{ e.f, e.team });
+        try luaString(w, e.kind);
+        if (e.x) |x| try w.print(", x = {d}, y = {d}, z = {d}", .{ x, e.y orelse 0, e.z orelse 0 });
+        try w.writeAll(", text = ");
+        try luaString(w, e.text);
+        try w.writeAll(" },\n");
+    }
     try w.writeAll("  },\n  players = {");
     for (meta.players.map.keys(), meta.players.map.values()) |id, name| {
         try w.print(" [{d}] = ", .{try std.fmt.parseInt(i64, id, 10)});
@@ -891,6 +901,16 @@ const Marker = struct {
     z2: f32 = 0,
     label: []const u8 = "",
 };
+/// a moment another widget pointed out during the parse (the dump widget's WG.replay_dump.event)
+const Event = struct {
+    f: u32 = 0,
+    kind: []const u8 = "",
+    team: i32 = -1,
+    x: ?f32 = null,
+    y: ?f32 = null,
+    z: ?f32 = null,
+    text: []const u8 = "",
+};
 const Camera = struct { mode: i32 = -1, name: []const u8 = "", keys: []const []const u8 = &.{} };
 pub const Meta = struct {
     map: struct { name: []const u8 = "" } = .{},
@@ -900,6 +920,7 @@ pub const Meta = struct {
     teams: std.json.ArrayHashMap(Team) = .{},
     chat: []const Chat = &.{},
     markers: []const Marker = &.{},
+    events: []const Event = &.{},
     players: std.json.ArrayHashMap([]const u8) = .{},
     cameras: []const Camera = &.{},
 };
