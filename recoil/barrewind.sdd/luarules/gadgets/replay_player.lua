@@ -417,6 +417,9 @@ for _, ud in pairs(UnitDefs) do
 	if inner then hiddenDefs[inner] = true end
 end
 
+local SetUnitRulesParam = Spring.SetUnitRulesParam
+local PUBLIC = { public = true }
+
 local function spawnUnit(i, r)
 	local name = M.defs[r.def]
 	if not name or not UnitDefNames[name] then return warnOnce("no unitdef " .. tostring(name)) end
@@ -440,6 +443,9 @@ local function spawnUnit(i, r)
 	local u = CreateUnit(name, v[1], v[2], v[3], 0, team, frame, true, nil, frame and builder or nil)
 	if not u then return warnOnce("CreateUnit failed: " .. name .. " team " .. team) end
 	MoveCtrl.Enable(u)
+	-- for LuaUI (replay_orders): the record it plays, 0-based as queues name it, and the replay's id
+	SetUnitRulesParam(u, "replay_index", r.index, PUBLIC)
+	SetUnitRulesParam(u, "replay_id", r.id, PUBLIC)
 	-- BAR's own script animates: weapons never fire
 	for w = 1, #(UnitDefs[UnitDefNames[name].id].weapons or {}) do
 		Spring.SetUnitWeaponState(u, w, "reloadState", 1e8)
@@ -536,8 +542,6 @@ local CMD_RECLAIM, MAX_UNITS = CMD.RECLAIM, Game.maxUnits
 
 -- a builder's recorded work (task, target, build power) as unit rules params: BAR's nano spray
 -- reads them through the Spring.GetUnitWorkerTask override in aaa_replay_worker_task.lua
-local SetUnitRulesParam = Spring.SetUnitRulesParam
-local PUBLIC = { public = true }
 
 -- the engine calls StartBuilding(heading, pitch) when a builder starts work, and the script turns
 -- the torso and arms towards the target; replay builders never really build, so it is called here

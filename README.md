@@ -88,7 +88,9 @@ within 0.5 [elmo](#whats-recorded "Recoil distance unit: one map grid square is 
 - **Every unit:** position, facing, health, build progress, on/off, what its weapon aims at, what it builds
 - **Aim pieces:** each weapon's barrel and everything it hangs from (torso, turret, arms), so a turret
   points the right way the moment you jump to any time
-- **Projectiles**, **features** (wrecks, trees), **terrain changes** and **build queues**
+- **Projectiles**, **features** (wrecks, trees) and **terrain changes**
+- **Command queues:** every unit's queued orders, drawn for the selected units as BAR draws them live
+  (the Replay Orders widget), and builders' queued buildings as blueprints
 - **Chat and map marks:** every message, point, drawn line and erase, fed into BAR's own chat and map
   marks as the replay reaches them (the match's players are listed in the playback game so BAR knows them)
 - **Economy**: every team's metal and energy level, storage, income, expense and pull, once a second. The player feeds them back through the engine's own resource counters, so BAR's top bar, player list and eco stats show the match's economy at the replay time (replays parsed before this show what the replayed units produce instead).
