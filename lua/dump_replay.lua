@@ -267,8 +267,8 @@ end
 -- terrain, queue floats}, then f32 rows: unit 23 (.., on/off, weapon target type + unit id or ground
 -- xyz, worker cmd, worker target (unit id, or -(feature id + 1)), build power), piece 14 (unit,
 -- piece, 12 matrix values), feature 8, removed 1, projectile 10 (id, def, team, xyz, velocity,
--- owner unit or -1), terrain 4 (heightmap x, z, new height, previous height), queues (builder,
--- team, n, then n x (def, x, z, facing)). Projectiles and terrain every frame, the rest every
+-- owner unit or -1), terrain 4 (heightmap x, z, new height, previous height), queues (unit,
+-- team, n, then n x (cmd, x, y, z, target, extra)). Projectiles and terrain every frame, the rest every
 -- SAMPLE_EVERY frames, queues every QUEUE_EVERY.
 -- Recoil's Lua numbers are 32-bit floats, so f32 loses nothing.
 
@@ -276,7 +276,8 @@ local isBuilder = {}
 for id, d in pairs(UnitDefs) do isBuilder[id] = d.isBuilder end
 
 local UNIT_ROW, PIECE_ROW, FEATURE_ROW, PROJECTILE_ROW, TERRAIN_ROW = 23, 14, 8, 10, 4
-local QUEUE_EVERY = 30
+-- a multiple of SAMPLE_EVERY: bake finds a queue's unit by the unit rows of the same frame
+local QUEUE_EVERY = 6
 
 -- every aim piece whose model-space matrix moved since it was last written; returns the new row end
 local function recordPieces(u, def, ps, np)
@@ -448,12 +449,14 @@ local function terrainSample(ts)
 	return n
 end
 
--- what each builder plans to build: its queued build orders, written when they change. Only
--- builders the command call-ins flagged are read, and every builder every QUEUE_SWEEP frames in
--- case an order changed some other way
+-- every unit's command queue (a factory's: the orders its new units get), written when it changes.
+-- Only units the command call-ins flagged are read, and every QUEUE_SWEEP frames any unit whose
+-- queue length changed some other way
 local lastQueue = {} -- [unitID] = string of the last written queue
+local lastQueueLength = {}
 local queueDirty = {}
 local QUEUE_SWEEP = 300
+local MAX_UNITS = Game.maxUnits
 
 function widget:UnitCommand(u) queueDirty[u] = true end
 function widget:UnitCmdDone(u) queueDirty[u] = true end
@@ -462,14 +465,39 @@ function widget:UnitCreated(u) queueDirty[u] = true end
 function widget:UnitFinished(u) queueDirty[u] = true end
 function widget:UnitGiven(u) queueDirty[u] = true end
 
+-- orders whose 4th parameter is an area radius
+local AREA = {}
+for _, name in ipairs({ "RECLAIM", "REPAIR", "RESURRECT", "CAPTURE", "RESTORE", "AREA_ATTACK", "LOAD_UNITS", "UNLOAD_UNITS" }) do
+	if CMD[name] then AREA[CMD[name]] = true end
+end
+
+-- one order as cmd, x, y, z, target (unit id, -(feature id + 1) or 0), extra (build facing or area
+-- radius); nil for orders with nowhere to draw. An order on one object that an area order made
+-- carries the area after the object: { id, x, y, z, radius }
+local function order(c)
+	local p = c.params
+	if #p == 1 or #p == 5 then
+		local id = p[1]
+		if id >= MAX_UNITS then
+			local x, y, z = S.GetFeaturePosition(id - MAX_UNITS)
+			if x then return c.id, x, y, z, -(id - MAX_UNITS + 1), 0 end
+		else
+			local x, y, z = S.GetUnitPosition(id)
+			if x then return c.id, x, y, z, id, 0 end
+		end
+	elseif #p >= 3 then
+		return c.id, p[1], p[2], p[3], 0, (c.id < 0 or AREA[c.id]) and p[4] or 0
+	end
+end
+
 local function queueRows(u, qs, n)
 	local cmds = S.GetUnitCommands(u, 200) or {}
+	lastQueueLength[u] = #cmds
 	local items = {}
 	for k = 1, #cmds do
-		local c = cmds[k]
-		if c.id < 0 and c.params[3] then
-			items[#items + 1] = format("%d %d %d %d", -c.id, c.params[1], c.params[3], c.params[4] or 0)
-		end
+		local cmd, x, y, z, target, extra = order(cmds[k])
+		-- a target unit's position moves: the key holds only who it is
+		if cmd then items[#items + 1] = target ~= 0 and format("%d %d", cmd, target) or format("%d %.0f %.0f %.0f %.0f", cmd, x, y, z, extra) end
 	end
 	local key = concat(items, ",")
 	if key == (lastQueue[u] or "") then
@@ -480,10 +508,10 @@ local function queueRows(u, qs, n)
 	qs[n + 1], qs[n + 2], qs[n + 3] = u, S.GetUnitTeam(u) or 0, #items
 	n = n + 3
 	for k = 1, #cmds do
-		local c = cmds[k]
-		if c.id < 0 and c.params[3] then
-			qs[n + 1], qs[n + 2], qs[n + 3], qs[n + 4] = -c.id, c.params[1], c.params[3], c.params[4] or 0
-			n = n + 4
+		local cmd, x, y, z, target, extra = order(cmds[k])
+		if cmd then
+			qs[n + 1], qs[n + 2], qs[n + 3], qs[n + 4], qs[n + 5], qs[n + 6] = cmd, x, y, z, target, extra
+			n = n + 6
 		end
 	end
 
@@ -493,17 +521,18 @@ end
 local function queuesSample(qs, sweep)
 	if sweep then
 		local units = S.GetAllUnits()
-		for i = 1, #units do queueDirty[units[i]] = true end
+		for i = 1, #units do
+			local u = units[i]
+			if S.GetUnitCommands(u, 0) ~= (lastQueueLength[u] or 0) then queueDirty[u] = true end
+		end
 		for u in pairs(lastQueue) do
-			if not S.ValidUnitID(u) or S.GetUnitIsDead(u) then lastQueue[u] = nil end
+			if not S.ValidUnitID(u) or S.GetUnitIsDead(u) then lastQueue[u], lastQueueLength[u] = nil, nil end
 		end
 	end
 	local n = 0
 	for u in pairs(queueDirty) do
 		queueDirty[u] = nil
-		if S.ValidUnitID(u) and not S.GetUnitIsDead(u) and isBuilder[S.GetUnitDefID(u) or 0] then
-			n = queueRows(u, qs, n)
-		end
+		if S.ValidUnitID(u) and not S.GetUnitIsDead(u) then n = queueRows(u, qs, n) end
 	end
 
 	return n
@@ -690,7 +719,7 @@ function widget:GameFrame(frame)
 		view = io.open(DIR .. "bardump_view.bin", "wb")
 		if view then view:write("BRVW", VFS.PackU32(1)) end
 		-- file header: magic, format version, floats per unit row
-		if bin then bin:write("BRDB", VFS.PackU32(3, UNIT_ROW)) end
+		if bin then bin:write("BRDB", VFS.PackU32(4, UNIT_ROW)) end
 		if not file or not bin then
 			S.Echo("Replay Dump v2: cannot open " .. path)
 			return

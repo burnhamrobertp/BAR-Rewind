@@ -13,7 +13,7 @@ end
 -- DrawUnitShapeGL4 API, as BAR's own Show Builder Queue does for live games.
 
 local M = VFS.Include("replay/meta.lua")
-local U32, F32 = VFS.UnpackU32, VFS.UnpackF32
+local U32, S32, F32 = VFS.UnpackU32, VFS.UnpackS32, VFS.UnpackF32
 local floor = math.floor
 local OPACITY = 0.3
 local REFRESH = 15 -- frames of replay time between rebuilds
@@ -32,25 +32,37 @@ end
 local plans = {}
 local items, units
 
+-- a queued build's unit def (orders that build have a negative command), position and facing
+local function item(i)
+	local str, s = items[1], items[2]
+	local pos = i * s.size + 1
+	local cmd = S32(str, pos)
+	if cmd >= 0 then return nil end
+
+	return -cmd, F32(str, pos + 4), F32(str, pos + 12), F32(str, pos + 20)
+end
+
 local function load()
 	local q, qs = section("queues")
 	if not qs then return false end
+	items = { section("queue_items") }
+	units = { section("units") }
+	-- every unit's orders are recorded: only those that ever queue a build are kept
+	local builds = {}
 	for i = 0, qs.count - 1 do
 		local v = U32(q, i * qs.size + 1, 4)
 		local unit, t, first, count = v[1], v[2], v[3], v[4]
 		local p = plans[unit]
 		if not p then p = {}; plans[unit] = p end
 		p[#p + 1], p[#p + 2], p[#p + 3] = t, first, count
+		for k = first, first + count - 1 do
+			if item(k) then builds[unit] = true break end
+		end
 	end
-	items = { section("queue_items") }
-	units = { section("units") }
+	for unit in pairs(plans) do
+		if not builds[unit] then plans[unit] = nil end
+	end
 	return true
-end
-
-local function item(i)
-	local str, s = items[1], items[2]
-	local pos = i * s.size + 1
-	return U32(str, pos), F32(str, pos + 4), F32(str, pos + 8), F32(str, pos + 12)
 end
 
 local function unitTeam(index)
@@ -81,7 +93,7 @@ local function refresh(t)
 		if k then
 			for i = p[k + 1], p[k + 1] + p[k + 2] - 1 do
 				local def, x, z = item(i)
-				local ud = UnitDefNames[M.defs[def] or ""]
+				local ud = def and UnitDefNames[M.defs[def] or ""]
 				if ud and not started(ud, x, z) then want[i] = unit end
 			end
 		end

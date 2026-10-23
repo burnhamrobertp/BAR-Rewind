@@ -39,7 +39,7 @@ const Sample = struct {
     pr: []const [10]f64,
     /// heightmap x, z, height, previous height
     terrain: []const [4]f64,
-    /// builder, team, n, then n x (def, x, z, facing)
+    /// unit, team, n, then n x (cmd, x, y, z, target, extra)
     queues: []const f64,
 };
 
@@ -214,26 +214,31 @@ fn addSample(b: *Bake, s: Sample) !void {
     while (at + 3 <= s.queues.len) {
         const id: u32 = @intFromFloat(s.queues[at]);
         const n: usize = @intFromFloat(s.queues[at + 2]);
-        const items = s.queues[at + 3 ..][0 .. n * 4];
-        at += 3 + n * 4;
+        const items = s.queues[at + 3 ..][0 .. n * 6];
+        at += 3 + n * 6;
         const unit_index = b.live_units.get(id) orelse continue;
         const first: u32 = @intCast(b.queue_items.items.len);
-        for (0..n) |i| try b.queue_items.append(gpa, .{
-            .def = @intFromFloat(items[i * 4]),
-            .x = @floatCast(items[i * 4 + 1]),
-            .z = @floatCast(items[i * 4 + 2]),
-            .facing = @floatCast(items[i * 4 + 3]),
-        });
+        for (0..n) |i| {
+            const item = items[i * 6 ..][0..6];
+            try b.queue_items.append(gpa, .{
+                .cmd = @intFromFloat(item[0]),
+                .x = @floatCast(item[1]),
+                .y = @floatCast(item[2]),
+                .z = @floatCast(item[3]),
+                .target = @intFromFloat(item[4]),
+                .extra = @floatCast(item[5]),
+            });
+        }
         try b.units.items[unit_index].queues.append(gpa, .{ .unit = unit_index, .t = f, .items = .{ .first = first, .count = @intCast(n) } });
     }
 }
 
-/// Records written by the dump widget into bardump.bin: "BRDB", u32 version 3, u32 unit row width,
+/// Records written by the dump widget into bardump.bin: "BRDB", u32 version 4, u32 unit row width,
 /// then per frame u32 frame, u32 counts {units, pieces, features added, features removed,
 /// projectiles, terrain, queue floats} and f32 rows of unit_row, 14, 8, 1, 10, 4 and 1 values.
 /// ponytail: the whole file is read at once; stream it if dumps outgrow RAM
 fn addBinarySamples(b: *Bake, arena_state: *std.heap.ArenaAllocator, bin: []const u8) !void {
-    if (!std.mem.startsWith(u8, bin, "BRDB") or std.mem.readInt(u32, bin[4..8], .little) != 3) return error.OldDump;
+    if (!std.mem.startsWith(u8, bin, "BRDB") or std.mem.readInt(u32, bin[4..8], .little) != 4) return error.OldDump;
     const unit_row: usize = std.mem.readInt(u32, bin[8..12], .little);
     if (unit_row != 23) return error.OldDump;
     var at: usize = 12;

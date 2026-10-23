@@ -4,7 +4,7 @@
 const std = @import("std");
 
 pub const magic = "BRC1".*;
-pub const version = 10;
+pub const version = 11;
 pub const alive_forever = std.math.maxInt(u32);
 
 pub fn Key(comptime n: usize) type {
@@ -86,20 +86,24 @@ pub const TerrainKey = extern struct {
     prev: f32,
 };
 
-/// A builder's queued build orders from frame t until its next record: `items` in queue_items.
-/// unit is the index into units.
+/// A unit's command queue from frame t until its next record: `items` in queue_items. unit is the
+/// index into units.
 pub const Queue = extern struct {
     unit: u32,
     t: u32,
     items: Span,
 };
 
-/// unit def, position, facing (0-3)
+/// One queued order: the command (negative: build that unit def), where (a target's position when
+/// it was recorded), the target (the replay's unit id, -(feature id + 1), or 0), and the build
+/// facing (0-3) or the area radius
 pub const QueueItem = extern struct {
-    def: u32,
+    cmd: i32,
     x: f32,
+    y: f32,
     z: f32,
-    facing: f32,
+    target: i32,
+    extra: f32,
 };
 
 /// A unit changing team at frame t (shared, given, captured). unit is the index into units, whose
