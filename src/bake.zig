@@ -537,15 +537,6 @@ pub fn main(init: std.process.Init) !void {
         try projectiles.append(gpa, projectile);
     }
 
-    // write: header, then each section 16-byte aligned
-    var header: curves.Header = .{
-        .magic = curves.magic,
-        .version = curves.version,
-        .first_frame = b.first_frame,
-        .last_frame = b.last_frame,
-        .offsets = undefined,
-        .counts = undefined,
-    };
     const sections = .{
         meta,             units.items,      transforms.items,  statuses.items,        tracks.items,
         b.features.items, projectiles.items, projectile_keys.items, pose_keys.items, targets.items,
@@ -553,21 +544,16 @@ pub fn main(init: std.process.Init) !void {
         cursor_tracks.items, cursor_keys.items, camera_keys.items, camera_values.items,
         demo.engine,     demo.script,      eco,
     };
-    var offset: u64 = std.mem.alignForward(u64, @sizeOf(curves.Header), 16);
-    inline for (sections, 0..) |items, i| {
-        header.offsets[i] = offset;
-        header.counts[i] = items.len;
-        offset = std.mem.alignForward(u64, offset + std.mem.sliceAsBytes(items).len, 16);
-    }
+    const laid = layout(b.first_frame, b.last_frame, sections);
 
     const file = try std.Io.Dir.cwd().createFile(io, args[2], .{});
     defer file.close(io);
-    try file.writePositionalAll(io, std.mem.asBytes(&header), 0);
-    inline for (sections, 0..) |items, i| try file.writePositionalAll(io, std.mem.sliceAsBytes(items), header.offsets[i]);
+    try file.writePositionalAll(io, std.mem.asBytes(&laid.header), 0);
+    inline for (sections, 0..) |items, i| try file.writePositionalAll(io, std.mem.sliceAsBytes(items), laid.header.offsets[i]);
 
     const names = [_][]const u8{ "transform", "status", "pose", "projectile" };
     std.log.info("frames {d}..{d}, {d} units, {d} features, {d} projectiles, {d} terrain changes, {d} queues, {d} team changes, {d} MB", .{
-        b.first_frame, b.last_frame, units.items.len, b.features.items.len, projectiles.items.len, b.terrain.items.len, queues.items.len, team_keys.items.len, offset >> 20,
+        b.first_frame, b.last_frame, units.items.len, b.features.items.len, projectiles.items.len, b.terrain.items.len, queues.items.len, team_keys.items.len, laid.size >> 20,
     });
     for (st, names) |s, name| std.log.info("{s}: {d} -> {d} keys, worst error {d:.3}", .{ name, s.in, s.out, s.worst });
     std.log.info("cursor: {d} -> {d} keys for {d} players, camera: {d} keys", .{ cursor_stats.in, cursor_stats.out, cursor_tracks.items.len, camera_keys.items.len });
@@ -579,9 +565,31 @@ pub fn main(init: std.process.Init) !void {
 
 // export for the Recoil player --------------------------------------------------------------------
 
+/// The header for `sections` (one slice per curves.Section) written one after another, each
+/// 16-byte aligned, and the size of the whole file
+fn layout(first_frame: u32, last_frame: u32, sections: anytype) struct { header: curves.Header, size: u64 } {
+    var header: curves.Header = .{
+        .magic = curves.magic,
+        .version = curves.version,
+        .first_frame = first_frame,
+        .last_frame = last_frame,
+        .offsets = undefined,
+        .counts = undefined,
+    };
+    var offset: u64 = std.mem.alignForward(u64, @sizeOf(curves.Header), 16);
+    inline for (sections, 0..) |items, i| {
+        header.offsets[i] = offset;
+        header.counts[i] = items.len;
+        offset = std.mem.alignForward(u64, offset + std.mem.sliceAsBytes(items).len, 16);
+    }
+
+    return .{ .header = header, .size = offset };
+}
+
 /// Recoil's Lua numbers are 32-bit floats: byte offsets past 2^24 are not exact. Every section is
 /// split into files of at most `chunk_bytes`, so offsets inside one chunk stay exact.
 pub const chunk_bytes = 8 << 20;
+const unowned = std.math.maxInt(u32);
 /// 30 s of sim frames per window: the player keeps one window of key data in memory
 pub const window_frames = 900;
 
@@ -710,6 +718,7 @@ fn writeWindows(
         const ws = file.header.first_frame + @as(u32, @intCast(win)) * window_frames;
         const we = ws + window_frames;
         for (0..count) |c| {
+            if (per == .tracks and owner[c] == unowned) continue;
             const unit = file.units[if (per == .units) c else owner[c]];
             if (unit.born >= we or (unit.died != curves.alive_forever and unit.died <= ws)) continue;
             const span = if (per == .units) switch (which) {
@@ -722,6 +731,7 @@ fn writeWindows(
             // a: last key at or before the window start; b: first key at or after its end
             const a = std.sort.upperBound(K, all, ws, orderT(K)) -| 1;
             const b = @min(std.sort.lowerBound(K, all, we, orderT(K)), all.len - 1);
+            if (a > b) continue;
             try index.appendSlice(gpa, &.{ @intCast(c), @intCast(data.items.len), @intCast(b - a + 1) });
             try data.appendSlice(gpa, all[a .. b + 1]);
         }
@@ -744,6 +754,7 @@ fn writeWindows(
 /// quaternion takes the sign nearer its predecessor, so lerping two keys turns the short way.
 fn quatTransforms(gpa: std.mem.Allocator, file: curves.File) ![]curves.Key(7) {
     const out = try gpa.alloc(curves.Key(7), file.transforms.len);
+    @memset(out, .{ .t = 0, .v = .{ 0, 0, 0, 0, 0, 0, 1 } });
     for (file.units) |unit| {
         var prev: [4]f32 = .{ 0, 0, 0, 1 };
         for (curves.slice(curves.TransformKey, file.transforms, unit.transforms), unit.transforms.first..) |k, i| {
@@ -793,6 +804,7 @@ pub fn exportFile(io: std.Io, gpa: std.mem.Allocator, file: curves.File, out_dir
     // windows: each holds, for every curve alive in it, just the keys needed to sample inside it
     const windows = (file.header.last_frame - file.header.first_frame) / window_frames + 1;
     const owner = try gpa.alloc(u32, file.tracks.len);
+    @memset(owner, unowned);
     for (file.units, 0..) |unit, i| for (curves.slice(curves.Track, file.tracks, unit.tracks), 0..) |_, k| {
         owner[unit.tracks.first + k] = @intCast(i);
     };
@@ -848,7 +860,7 @@ pub fn exportFile(io: std.Io, gpa: std.mem.Allocator, file: curves.File, out_dir
         try luaString(w, m.@"type");
         try w.writeAll(", name = ");
         try luaString(w, m.name);
-        try w.print(", x = {d}, y = {d}, z = {d}, x2 = {d}, y2 = {d}, z2 = {d}, label = ", .{ m.x, m.y, m.z, m.x2, m.y2, m.z2 });
+        try w.print(", x = {d}, y = {d}, z = {d}, x2 = {d}, y2 = {d}, z2 = {d}, label = ", .{ finite(m.x), finite(m.y), finite(m.z), finite(m.x2), finite(m.y2), finite(m.z2) });
         try luaString(w, m.label);
         try w.writeAll(" },\n");
     }
@@ -856,7 +868,7 @@ pub fn exportFile(io: std.Io, gpa: std.mem.Allocator, file: curves.File, out_dir
     for (meta.events) |e| {
         try w.print("    {{ f = {d}, team = {d}, kind = ", .{ e.f, e.team });
         try luaString(w, e.kind);
-        if (e.x) |x| try w.print(", x = {d}, y = {d}, z = {d}", .{ x, e.y orelse 0, e.z orelse 0 });
+        if (e.x) |x| try w.print(", x = {d}, y = {d}, z = {d}", .{ finite(x), finite(e.y orelse 0), finite(e.z orelse 0) });
         try w.writeAll(", text = ");
         try luaString(w, e.text);
         try w.writeAll(" },\n");
@@ -883,6 +895,11 @@ pub fn exportFile(io: std.Io, gpa: std.mem.Allocator, file: curves.File, out_dir
     const meta_file = try dir.createFile(io, "meta.lua", .{});
     defer meta_file.close(io);
     try meta_file.writePositionalAll(io, lua.written(), 0);
+}
+
+/// Lua source has no literal for inf or nan: `{d}` would write them as names, which read as nil
+fn finite(v: f32) f32 {
+    return if (std.math.isFinite(v)) v else 0;
 }
 
 const Named = struct { name: []const u8 = "" };
@@ -990,16 +1007,84 @@ fn flatBlocks(gpa: std.mem.Allocator, script: []const u8) ![]Block {
 fn writeBlockLines(w: *std.Io.Writer, body: []const u8, keys: ?[]const []const u8) !void {
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0) continue;
+        const line = scriptLine(raw) orelse continue;
         if (keys) |wanted| {
-            const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
             var known = false;
-            for (wanted) |k| known = known or std.ascii.eqlIgnoreCase(line[0..eq], k);
+            for (wanted) |k| known = known or std.ascii.eqlIgnoreCase(line.key, k);
             if (!known) continue;
         }
-        try w.print("\t\t{s}\n", .{line});
+        try w.print("\t\t{s}={s};\n", .{ line.key, line.value });
     }
+}
+
+/// A start script line as `key=value;`, or null when it is anything else or its value could end
+/// early or open a block
+fn scriptLine(raw: []const u8) ?struct { key: []const u8, value: []const u8 } {
+    const line = std.mem.trim(u8, raw, " \t\r");
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    if (key.len == 0) return null;
+    for (key) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return null;
+    const rest = line[eq + 1 ..];
+    const end = std.mem.indexOfScalar(u8, rest, ';') orelse rest.len;
+    if (std.mem.trim(u8, rest[@min(end + 1, rest.len)..], " \t").len > 0) return null;
+    const value = std.mem.trim(u8, rest[0..end], " \t");
+    if (!scriptSafe(value)) return null;
+
+    return .{ .key = key, .value = value };
+}
+
+/// Free of anything that would end a start script value early or open or close a block
+pub fn scriptSafe(s: []const u8) bool {
+    for (s) |c| switch (c) {
+        0...31, 127, ';', '{', '}' => return false,
+        else => {},
+    };
+
+    return true;
+}
+
+/// Becomes a folder name and an engine binary's path: letters, digits and . - _ + only
+pub fn engineVersion(s: []const u8) bool {
+    if (s.len == 0 or s.len > 128 or !std.ascii.isAlphanumeric(s[0])) return false;
+    for (s) |c| if (!std.ascii.isAlphanumeric(c) and std.mem.indexOfScalar(u8, ".-_+", c) == null) return false;
+
+    return true;
+}
+
+/// A game or map name: a pr-downloader argument, quoted in modinfo.lua and the start script's MapName
+pub fn contentName(s: []const u8) bool {
+    if (s.len == 0 or s.len > 255 or s[0] == '-' or !scriptSafe(s)) return false;
+    for (s) |c| if (c == '"' or c == '\\' or c == '/') return false;
+
+    return true;
+}
+
+test "names from a replay can't become options, paths or Lua" {
+    try std.testing.expect(engineVersion("2025.06.19"));
+    try std.testing.expect(engineVersion("105.1.1-2511-g747f18b"));
+    try std.testing.expect(!engineVersion("../../x"));
+    try std.testing.expect(!engineVersion("--help"));
+    try std.testing.expect(!engineVersion("1.0:evil"));
+    try std.testing.expect(contentName("Beyond All Reason test-29123-6fa3e7c"));
+    try std.testing.expect(contentName("Supreme Isthmus v2.1"));
+    try std.testing.expect(contentName("Beyond All Reason $VERSION"));
+    try std.testing.expect(!contentName("--download-engine"));
+    try std.testing.expect(!contentName("x\" } os.exit() --"));
+    try std.testing.expect(!contentName("map;\n[GAME]"));
+    try std.testing.expect(!contentName("..\\..\\evil"));
+}
+
+test "start script lines keep their key and value and nothing that changes the script's shape" {
+    try std.testing.expectEqualStrings("tweakdefs", scriptLine("  tweakdefs = ZG89MQ==; ").?.key);
+    try std.testing.expectEqualStrings("ZG89MQ==", scriptLine("  tweakdefs = ZG89MQ==; ").?.value);
+    try std.testing.expectEqualStrings("bob", scriptLine("name=bob").?.value);
+    try std.testing.expect(scriptLine("name=bob;spectator=0;") == null);
+    try std.testing.expectEqualStrings("[TWDW]bob", scriptLine("name=[TWDW]bob;").?.value);
+    try std.testing.expect(scriptLine("name=bob}{;") == null);
+    try std.testing.expect(scriptLine("na me=bob;") == null);
+    try std.testing.expect(scriptLine("[PLAYER1]") == null);
+    try std.testing.expect(scriptLine("=bob;") == null);
 }
 
 /// The value of the first `key=value;` line in a start script, or ""
@@ -1022,6 +1107,7 @@ fn byFirst(_: void, a: [2]i64, b: [2]i64) bool {
 
 /// BAR start script for a local spectator game with the replay's map, teams and options
 pub fn startScript(w: *std.Io.Writer, gpa: std.mem.Allocator, meta: Meta, script: []const u8) !void {
+    if (!scriptSafe(meta.map.name)) return error.BadMapName;
     try w.print("[GAME]\n{{\n\tMapName={s};\n\tGameType=BAR Rewind dev;\n\tIsHost=1;\n\tOnlyLocal=1;\n" ++
         "\tMyPlayerName=viewer;\n\tStartPosType=0;\n\tRecordDemo=0;\n\t[PLAYER0]\n\t{{\n\t\tName=viewer;\n\t\tSpectator=1;\n\t}}\n", .{meta.map.name});
 
@@ -1107,4 +1193,150 @@ fn printEvents(io: std.Io, gpa: std.mem.Allocator, curves_path: []const u8) !voi
     try out.interface.writeAll(try std.json.Stringify.valueAlloc(gpa, list, .{}));
     try out.interface.writeAll("\n");
     try out.interface.flush();
+}
+
+// a small replay with something in every section ------------------------------------------------
+
+const test_meta =
+    \\{"map":{"name":"Test Map"},"defs":{"1":{"name":"armcom"}},"wdefs":{"1":{"name":"laser"}},
+    \\"teams":{"0":{"color":[1,0,0],"ally":0,"leader":"[TAG]bob"},"1":{"color":[0,0,1],"ally":1},"2":{"ally":2}},
+    \\"players":{"0":"[TAG]bob"},"chat":[{"f":40,"name":"[TAG]bob","text":"gl \"hf\""}],
+    \\"events":[{"f":60,"kind":"death","team":1,"x":10}]}
+;
+const test_script =
+    "[game]\n{\n\tgametype=Beyond All Reason test-1;\n\tmapname=Test Map;\n\t[player0]\n\t{\n\t\tname=[TAG]bob;\n" ++
+    "\t\tteam=0;\n\t\tskill=[18.48];\n\t}\n\t[modoptions]\n\t{\n\t\tdeathmode=com;\n\t}\n}\n";
+
+fn testCurves(gpa: std.mem.Allocator) ![]align(16) u8 {
+    const flat: [6]f32 = .{ 0, 0, 1, 0, 1, 0 };
+    const units = [_]Unit{
+        .{ .id = 1, .def = 1, .team = 0, .born = 0, .died = curves.alive_forever, .transforms = .{ .first = 0, .count = 2 }, .statuses = .{ .first = 0, .count = 1 }, .targets = .{ .first = 0, .count = 1 }, .tracks = .{ .first = 0, .count = 1 } },
+        .{ .id = 2, .def = 1, .team = 1, .born = 10, .died = 900, .transforms = .{ .first = 2, .count = 2 }, .statuses = .{ .first = 1, .count = 1 }, .targets = .{ .first = 1, .count = 0 }, .tracks = .{ .first = 1, .count = 0 } },
+    };
+    const transforms = [_]TransformKey{
+        .{ .t = 0, .v = .{ 1, 2, 3 } ++ flat }, .{ .t = 1200, .v = .{ 9, 2, 3 } ++ flat },
+        .{ .t = 10, .v = .{ 5, 0, 5 } ++ flat }, .{ .t = 890, .v = .{ 6, 0, 5 } ++ flat },
+    };
+    const statuses = [_]StatusKey{ .{ .t = 0, .v = .{ 100, 100, 1, 1 } }, .{ .t = 10, .v = .{ 50, 100, 1, 1 } } };
+    const targets = [_]curves.TargetKey{.{ .t = 0, .v = .{ 1, 2, 0, 0, 0, 0, 0 } }};
+    const tracks = [_]curves.Track{.{ .piece = 0, .pose = .{ .first = 0, .count = 2 } }};
+    const pose_keys = [_]PoseKey{ .{ .t = 0, .v = @splat(0) }, .{ .t = 900, .v = .{ 0, 1, 0, 0, 0, 0 } } };
+    const features = [_]curves.Feature{.{ .id = 1, .def = 0, .born = 0, .died = 300, .pos = .{ 1, 1, 1 }, .dir = .{ 0, 0, 1 } }};
+    const projectiles = [_]curves.Projectile{.{ .id = 1, .def = 1, .team = 0, .born = 5, .died = 20, .keys = .{ .first = 0, .count = 2 }, .owner = 1 }};
+    const projectile_keys = [_]ProjectileKey{ .{ .t = 5, .v = @splat(1) }, .{ .t = 20, .v = @splat(2) } };
+    const terrain = [_]curves.TerrainKey{.{ .t = 100, .x = 1, .z = 1, .h = 10, .prev = 0 }};
+    const queues = [_]curves.Queue{.{ .unit = 0, .t = 0, .items = .{ .first = 0, .count = 1 } }};
+    const queue_items = [_]curves.QueueItem{.{ .cmd = -1, .x = 1, .y = 0, .z = 1, .target = 0, .extra = 0 }};
+    const team_keys = [_]curves.TeamKey{.{ .unit = 1, .t = 50, .team = 0 }};
+    const cursor_tracks = [_]curves.CursorTrack{.{ .player = 0, .keys = .{ .first = 0, .count = 1 } }};
+    const cursor_keys = [_]curves.CursorKey{.{ .t = 0, .v = .{ 1, 1, 2, 2, 0 } }};
+    const camera_keys = [_]curves.CameraKey{.{ .t = 0, .player = 0, .mode = 1, .values = .{ .first = 0, .count = 2 } }};
+    const camera_values = [_]f32{ 1, 2 };
+    const sections = .{
+        @as([]const u8, test_meta), &units,     &transforms, &statuses,  &tracks,     &features,      &projectiles,
+        &projectile_keys,           &pose_keys, &targets,    &terrain,   &queues,     &queue_items,   &team_keys,
+        &cursor_tracks,             &cursor_keys, &camera_keys, &camera_values, @as([]const u8, "2025.06.19"),
+        @as([]const u8, test_script), @as([]const u8, ""),
+    };
+    const laid = layout(0, 1800, sections);
+    const bytes = try gpa.alignedAlloc(u8, .@"16", @intCast(laid.size));
+    @memset(bytes, 0);
+    @memcpy(bytes[0..@sizeOf(curves.Header)], std.mem.asBytes(&laid.header));
+    inline for (sections, 0..) |items, i| {
+        const raw = std.mem.sliceAsBytes(items[0..]);
+        @memcpy(bytes[@intCast(laid.header.offsets[i])..][0..raw.len], raw);
+    }
+
+    return bytes;
+}
+
+fn playerPath(gpa: std.mem.Allocator, bytes: []align(16) const u8) ![]const u8 {
+    const file = try curves.File.view(bytes);
+    const meta = try parseMeta(gpa, file);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try exportFile(std.testing.io, gpa, file, try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    var script: std.Io.Writer.Allocating = .init(gpa);
+    try startScript(&script.writer, gpa, meta, file.demo_script);
+
+    return script.written();
+}
+
+test "a replay with something in every section plays through" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const script = try playerPath(gpa, try testCurves(gpa));
+    try std.testing.expect(std.mem.indexOf(u8, script, "\t\tname=[TAG]bob;\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "\t\tdeathmode=com;\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "MapName=Test Map;") != null);
+}
+
+test "a corrupted replay is refused or played, never crashes" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.fuzz(try testCurves(arena.allocator()), corrupted, .{});
+}
+
+fn corrupted(base: []align(16) const u8, smith: *std.testing.Smith) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const bytes = try gpa.alignedAlloc(u8, .@"16", base.len);
+    @memcpy(bytes, base);
+    const words: []u32 = @as([*]u32, @ptrCast(bytes.ptr))[0 .. bytes.len / 4];
+    while (!smith.eos()) words[smith.index(words.len)] = smith.value(u32);
+    _ = playerPath(gpa, bytes) catch {};
+}
+
+test "a replay pointing outside its own arrays is refused" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const Corrupt = *const fn (*curves.Header, []align(16) u8) void;
+    const cases = [_]Corrupt{
+        struct {
+            fn f(h: *curves.Header, _: []align(16) u8) void {
+                h.counts[@intFromEnum(curves.Section.units)] = std.math.maxInt(u64) / 8;
+            }
+        }.f,
+        struct {
+            fn f(h: *curves.Header, _: []align(16) u8) void {
+                h.offsets[@intFromEnum(curves.Section.units)] += 1;
+            }
+        }.f,
+        struct {
+            fn f(h: *curves.Header, _: []align(16) u8) void {
+                h.first_frame = h.last_frame + 1;
+            }
+        }.f,
+        struct {
+            fn f(h: *curves.Header, _: []align(16) u8) void {
+                h.last_frame = curves.max_frames + 1;
+            }
+        }.f,
+        struct {
+            fn f(h: *curves.Header, bytes: []align(16) u8) void {
+                const units: [*]Unit = @ptrCast(@alignCast(bytes.ptr + h.offsets[@intFromEnum(curves.Section.units)]));
+                units[1].transforms.count = 3;
+            }
+        }.f,
+        struct {
+            fn f(h: *curves.Header, bytes: []align(16) u8) void {
+                const queues: [*]curves.Queue = @ptrCast(@alignCast(bytes.ptr + h.offsets[@intFromEnum(curves.Section.queues)]));
+                queues[0].unit = 2;
+            }
+        }.f,
+        struct {
+            fn f(h: *curves.Header, bytes: []align(16) u8) void {
+                const tracks: [*]curves.Track = @ptrCast(@alignCast(bytes.ptr + h.offsets[@intFromEnum(curves.Section.tracks)]));
+                tracks[0].pose.first = std.math.maxInt(u32);
+            }
+        }.f,
+    };
+    for (cases) |corrupt| {
+        const bytes = try testCurves(gpa);
+        corrupt(@ptrCast(bytes.ptr), bytes);
+        try std.testing.expectError(error.BadCurves, curves.File.view(bytes));
+    }
 }

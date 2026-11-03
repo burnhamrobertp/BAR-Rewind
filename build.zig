@@ -36,7 +36,8 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/player.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            // safety checks stay on: the replays it reads were made on other people's machines
+            .optimize = .ReleaseSafe,
             .strip = true,
         }),
     });

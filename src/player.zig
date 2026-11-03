@@ -506,11 +506,13 @@ fn play(ctx: Ctx, path: []const u8) !void {
         path, version, curves.version, if (version > curves.version) "download the newest bar-rewind" else "parse the replay again",
     });
     const file = curves.File.view(bytes) catch return fail(ctx, "{s} is damaged", .{path});
-    const meta = try bake.parseMeta(ctx.gpa, file);
+    const meta = bake.parseMeta(ctx.gpa, file) catch return fail(ctx, "{s} is damaged", .{path});
 
     const rapid = try rapidEntries(ctx, bar);
     const recorded_game = bake.scriptField(file.demo_script, "gametype");
     const game = if (recorded_game.len > 0 and !std.mem.startsWith(u8, recorded_game, "BAR Rewind")) recorded_game else try newestGame(ctx, rapid);
+    if (!bake.engineVersion(file.engine) or !bake.contentName(game) or !bake.contentName(meta.map.name))
+        return fail(ctx, "{s} names an engine, game or map that BAR Rewind will not fetch or load", .{path});
     const engine_dir = try join(ctx, &.{ bar, "engine", try std.fmt.allocPrint(ctx.gpa, "recoil_{s}", .{file.engine}) });
     const scanned = try scannedNames(ctx, bar);
     var missing: std.ArrayList([2][]const u8) = .empty;
@@ -534,12 +536,18 @@ fn play(ctx: Ctx, path: []const u8) !void {
         const patched = try std.fmt.allocPrint(ctx.gpa, "{s} \"{s}\" {s}", .{ modinfo[0..start], game, modinfo[end..] });
         try dir.writeFile(ctx.io, .{ .sub_path = "modinfo.lua", .data = patched });
     }
-    try bake.exportFile(ctx.io, ctx.gpa, file, try join(ctx, &.{ mutator, "replay" }));
+    bake.exportFile(ctx.io, ctx.gpa, file, try join(ctx, &.{ mutator, "replay" })) catch |err| switch (err) {
+        error.InvalidCharacter, error.Overflow => return fail(ctx, "{s} is damaged", .{path}),
+        else => return err,
+    };
 
     const cache = try cacheDir(ctx);
     try Io.Dir.cwd().createDirPath(ctx.io, cache);
     var script: Io.Writer.Allocating = .init(ctx.gpa);
-    try bake.startScript(&script.writer, ctx.gpa, meta, file.demo_script);
+    bake.startScript(&script.writer, ctx.gpa, meta, file.demo_script) catch |err| switch (err) {
+        error.InvalidCharacter, error.Overflow, error.BadMapName => return fail(ctx, "{s} is damaged", .{path}),
+        else => return err,
+    };
     const script_path = try join(ctx, &.{ cache, "play_script.txt" });
     try Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = script_path, .data = script.written() });
 
