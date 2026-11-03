@@ -67,6 +67,9 @@ zig build test
 zig build dist                           # both for Windows and Linux, in zig-out/dist
 ```
 
+Pushing a `v*` tag builds a release: GitHub Actions tests, builds `dist`, signs a `manifest.json` of the
+files with the release key (`release-key.pub` is its public half) and drafts the release.
+
 - `lua/dump_replay.lua`: the BAR widget that records a replay while the headless engine re-simulates it
 - `src/parse.zig`: `bake parse`, which runs the engine on a replay with the dump widgets, then bakes
 - `src/bake.zig`, `src/curves.zig`: recording → `.curves` (keyframes thinned with Douglas–Peucker), and

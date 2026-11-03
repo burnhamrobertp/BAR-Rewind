@@ -36,6 +36,15 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // sign: a release's signed manifest ----------------------------------------------------------
+    const sign = b.addExecutable(.{
+        .name = "sign",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/sign.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }),
+    });
+    const run_sign = b.addRunArtifact(sign);
+    run_sign.addPassthruArgs();
+    b.step("sign", "Release manifests: zig build sign -- keygen | manifest | verify").dependOn(&run_sign.step);
+
     // tests -----------------------------------------------------------------------------------
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
