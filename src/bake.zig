@@ -1,3 +1,4 @@
+//! bake parse <demo.sdfz> <out.curves> --bar <dir> [--widgets <dir>] [--log <file>]   (see parse.zig)
 //! bake <bardump.jsonl> <out.curves> <demo.sdfz>
 //! bake export-lua <in.curves> <dir>   (chunked sections + meta.lua for the Recoil player)
 //! bake start-script <in.curves> <out.txt>   (the player's start script)
@@ -7,7 +8,9 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const content = @import("content.zig");
 const curves = @import("curves.zig");
+const parse = @import("parse.zig");
 
 const Unit = curves.Unit;
 const TransformKey = curves.TransformKey;
@@ -399,6 +402,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = std.heap.smp_allocator;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "parse")) return parseCommand(init, gpa, args[2..]);
     if (args.len == 4 and std.mem.eql(u8, args[1], "export-lua")) return exportLua(io, gpa, args[2], args[3]);
     if (args.len == 4 and std.mem.eql(u8, args[1], "start-script")) return writeStartScript(io, gpa, args[2], args[3]);
     if (args.len == 3 and std.mem.eql(u8, args[1], "info")) return printInfo(io, gpa, args[2]);
@@ -411,9 +415,68 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("usage: bake <bardump.jsonl> <out.curves> <demo.sdfz> | bake export-lua <in.curves> <out-dir> | bake start-script <in.curves> <out.txt> | bake info <in.curves> | bake events <in.curves> | bake version", .{});
         std.process.exit(2);
     }
-    const demo = try readDemo(io, gpa, args[3]);
+    bakeDump(io, gpa, args[1], args[2], args[3]) catch |err| switch (err) {
+        error.ToleranceExceeded => {
+            std.log.err("baked curve exceeds tolerance", .{});
+            std.process.exit(1);
+        },
+        else => return err,
+    };
+}
 
-    const text = try std.Io.Dir.cwd().readFileAlloc(io, args[1], gpa, .limited(16 << 30));
+fn parseCommand(init: std.process.Init, gpa: std.mem.Allocator, args: []const []const u8) !void {
+    var o: parse.Options = .{ .bar = "", .demo = "", .out = "", .log = "" };
+    var positional: usize = 0;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.startsWith(u8, args[i], "--") and i + 1 < args.len) {
+            const value = args[i + 1];
+            if (std.mem.eql(u8, args[i], "--bar")) o.bar = value else if (std.mem.eql(u8, args[i], "--widgets")) o.extra_widgets = value else if (std.mem.eql(u8, args[i], "--log")) o.log = value else positional = 99;
+            i += 1;
+        } else {
+            switch (positional) {
+                0 => o.demo = args[i],
+                1 => o.out = args[i],
+                else => {},
+            }
+            positional += 1;
+        }
+    }
+    if (positional != 2 or o.bar.len == 0) {
+        std.log.err("usage: bake parse <demo.sdfz> <out.curves> --bar <BAR data folder kept for parsing> [--widgets <folder>] [--log <file>]", .{});
+        std.process.exit(2);
+    }
+    if (o.log.len == 0) o.log = try std.fmt.allocPrint(gpa, "{s}.log", .{o.out});
+
+    var buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writerStreaming(init.io, &buffer);
+    var progress: parse.Progress = .{ .w = &stdout.interface };
+    parse.run(.{ .io = init.io, .gpa = gpa, .env = init.environ_map }, o, &progress) catch |err| {
+        const message = switch (err) {
+            error.PlayerRecording => "a recording of BAR Rewind's own player, not a match",
+            error.NeverStarted => "the game never started in this recording",
+            error.UnusableNames => "the demo names an engine, game or map that cannot be fetched safely",
+            error.NeverReachedGame => "the engine never reached the game in 5 minutes",
+            error.TimedOut => "the parse took over 2 hours",
+            error.EngineFailed => parse.engine_message,
+            error.NoPrDownloader => "no pr-downloader in the BAR data folder's engines",
+            error.FetchFailed => "pr-downloader could not fetch what the match needs (see the log)",
+            error.BadDemo => "not a readable demo",
+            else => @errorName(err),
+        };
+        try std.json.Stringify.value(.{ .@"error" = message }, .{}, &stdout.interface);
+        try stdout.interface.writeByte('\n');
+        try stdout.interface.flush();
+        std.process.exit(1);
+    };
+}
+
+/// The dump widget's recording (`dump_path`, a .jsonl with its .bin, .view.bin and .eco.bin beside
+/// it) and the match's demo, as a .curves at `out_path`
+pub fn bakeDump(io: std.Io, gpa: std.mem.Allocator, dump_path: []const u8, out_path: []const u8, demo_path: []const u8) !void {
+    const demo = try readDemo(io, gpa, demo_path);
+
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, dump_path, gpa, .limited(16 << 30));
     var b: Bake = .{ .gpa = gpa };
 
     var lines = std.mem.splitScalar(u8, text, '\n');
@@ -427,7 +490,7 @@ pub fn main(init: std.process.Init) !void {
     gpa.free(text);
 
     // the per-frame samples sit next to the headers: out.jsonl -> out.bin
-    const stem = if (std.mem.endsWith(u8, args[1], ".jsonl")) args[1][0 .. args[1].len - ".jsonl".len] else args[1];
+    const stem = if (std.mem.endsWith(u8, dump_path, ".jsonl")) dump_path[0 .. dump_path.len - ".jsonl".len] else dump_path;
     const bin_path = try std.fmt.allocPrint(gpa, "{s}.bin", .{stem});
     const bin = try std.Io.Dir.cwd().readFileAlloc(io, bin_path, gpa, .limited(64 << 30));
     try addBinarySamples(&b, &parse_arena, bin);
@@ -546,7 +609,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const laid = layout(b.first_frame, b.last_frame, sections);
 
-    const file = try std.Io.Dir.cwd().createFile(io, args[2], .{});
+    const file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
     defer file.close(io);
     try file.writePositionalAll(io, std.mem.asBytes(&laid.header), 0);
     inline for (sections, 0..) |items, i| try file.writePositionalAll(io, std.mem.sliceAsBytes(items), laid.header.offsets[i]);
@@ -557,10 +620,7 @@ pub fn main(init: std.process.Init) !void {
     });
     for (st, names) |s, name| std.log.info("{s}: {d} -> {d} keys, worst error {d:.3}", .{ name, s.in, s.out, s.worst });
     std.log.info("cursor: {d} -> {d} keys for {d} players, camera: {d} keys", .{ cursor_stats.in, cursor_stats.out, cursor_tracks.items.len, camera_keys.items.len });
-    for (st) |s| if (s.worst > tolerance + 1e-3) {
-        std.log.err("baked curve exceeds tolerance", .{});
-        std.process.exit(1);
-    };
+    for (st) |s| if (s.worst > tolerance + 1e-3) return error.ToleranceExceeded;
 }
 
 // export for the Recoil player --------------------------------------------------------------------
@@ -621,7 +681,7 @@ fn isAny(name: []const u8, names: []const []const u8) bool {
 }
 
 /// `s` as a double-quoted Lua string literal
-fn luaString(w: *std.Io.Writer, s: []const u8) !void {
+pub fn luaString(w: *std.Io.Writer, s: []const u8) !void {
     try w.writeByte('"');
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
@@ -964,11 +1024,15 @@ pub fn readCurves(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !curves.
 
 // the match's demo and start script --------------------------------------------------------------
 
-const Demo = struct { engine: []const u8, script: []const u8 };
+pub const Demo = struct {
+    engine: []const u8,
+    script: []const u8,
+    last_frame: u32,
+};
 
 /// A demo (.sdfz) is gzip around a header (its length at 20, the engine version at 24, the start
-/// script's length at 304), the start script, then the packet stream.
-fn readDemo(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !Demo {
+/// script's and the packet stream's lengths at 304 and 308), the start script, then the packet stream.
+pub fn readDemo(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !Demo {
     const compressed = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 30));
     defer gpa.free(compressed);
     var in: std.Io.Reader = .fixed(compressed);
@@ -976,11 +1040,46 @@ fn readDemo(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !Demo {
     var gz: std.compress.flate.Decompress = .init(&in, .gzip, &window);
     const bytes = try gz.reader.allocRemaining(gpa, .limited(4 << 30));
     if (bytes.len < 312) return error.BadDemo;
-    const head: usize = @intCast(std.mem.readInt(i32, bytes[20..24], .little));
-    const script_len: usize = @intCast(std.mem.readInt(i32, bytes[304..308], .little));
+    const head = std.math.cast(usize, std.mem.readInt(i32, bytes[20..24], .little)) orelse return error.BadDemo;
+    const script_len = std.math.cast(usize, std.mem.readInt(i32, bytes[304..308], .little)) orelse return error.BadDemo;
+    const stream_len = std.math.cast(usize, std.mem.readInt(i32, bytes[308..312], .little)) orelse return error.BadDemo;
     if (head + script_len > bytes.len) return error.BadDemo;
 
-    return .{ .engine = std.mem.sliceTo(bytes[24..280], 0), .script = bytes[head..][0..script_len] };
+    return .{
+        .engine = std.mem.sliceTo(bytes[24..280], 0),
+        .script = bytes[head..][0..script_len],
+        .last_frame = lastKeyframe(bytes[head + script_len ..], stream_len),
+    };
+}
+
+/// The stream's length stays 0 in the header when a game crashed or was quit, and the engine then
+/// keeps simulating past the end of the recording: the last keyframe is where the match ended
+fn lastKeyframe(stream: []const u8, stream_len: usize) u32 {
+    const end = if (stream_len > 0) @min(stream_len, stream.len) else stream.len;
+    var last: u32 = 0;
+    var i: usize = 0;
+    // each packet: f32 game time, u32 size, then size bytes; a keyframe is id 1 then an i32 frame
+    while (i + 8 <= end) {
+        const size = std.mem.readInt(u32, stream[i + 4 ..][0..4], .little);
+        i += 8;
+        if (size >= 5 and size <= end - i and stream[i] == 1) last = @intCast(@max(0, std.mem.readInt(i32, stream[i + 1 ..][0..4], .little)));
+        i += @min(size, end - i);
+    }
+
+    return last;
+}
+
+test "the last keyframe ends the match, whatever follows it" {
+    var stream: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&stream);
+    for ([_]i32{ 30, 900 }) |frame| {
+        try w.writeAll(&.{ 0, 0, 0, 0, 5, 0, 0, 0, 1 });
+        try w.writeInt(i32, frame, .little);
+    }
+    try w.writeAll(&.{ 0, 0, 0, 0, 5, 0, 0, 0, 7, 9, 9, 9, 9 });
+    try std.testing.expectEqual(900, lastKeyframe(w.buffered(), 0));
+    try std.testing.expectEqual(30, lastKeyframe(w.buffered(), 13));
+    try std.testing.expectEqual(0, lastKeyframe(w.buffered()[0..10], 0));
 }
 
 /// `[name] { body }` in a start script whose body holds no block of its own

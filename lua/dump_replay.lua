@@ -10,7 +10,7 @@ function widget:GetInfo()
 	}
 end
 
--- Protocol: tools/pipeline.py writes bardump.request (first line = output path), launches the
+-- Protocol: bake parse (src/parse.zig) writes bardump.request ("dump <last frame>"), launches the
 -- replay; this widget dumps every SAMPLE_EVERY frames and quits the engine at GameOver.
 
 local SAMPLE_EVERY = 3 -- sim is 30 Hz, so 10 Hz

@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
+    embedLua(b, bake.root_module);
     b.installArtifact(bake);
     const run_bake = b.addRunArtifact(bake);
     if (b.option([]const u8, "in", "bake: the dump to read (<name>.jsonl, with <name>.bin beside it)")) |in| run_bake.addArg(in);
@@ -67,7 +68,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     }) });
+    embedLua(b, tests.root_module);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
+}
+
+/// what bake parse writes into BAR's data folder
+fn embedLua(b: *std.Build, module: *std.Build.Module) void {
+    for ([_][]const u8{ "dump_replay.lua", "dump_replay_eco.lua", "bar-widgets.txt" }) |name| {
+        module.addAnonymousImport(name, .{ .root_source_file = b.path(b.fmt("lua/{s}", .{name})) });
+    }
 }
