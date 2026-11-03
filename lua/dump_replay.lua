@@ -633,7 +633,7 @@ local function readRequest()
 	f:close()
 	local frame, x, z = line:match("^shot (%d+) ([%d%.]+) ([%d%.]+)")
 	if frame then return { shot = tonumber(frame), x = tonumber(x), z = tonumber(z) } end
-	-- io.open is sandboxed to the write dir; pipeline.py moves the files out
+	-- io.open is sandboxed to the write dir; bake parse moves the files out
 	return { path = DIR .. "bardump.jsonl", last = tonumber(line:match("(%d+)$")) }
 end
 

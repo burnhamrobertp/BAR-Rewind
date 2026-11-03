@@ -2,7 +2,7 @@ function gadget:GetInfo()
 	return { name = "Replay Shot", desc = "Check mode: replay/shot.lua -> jump, frame the camera, screenshot, quit", layer = 1, enabled = true }
 end
 
--- replay/shot.lua: return { frame = <frame>, state = <Spring.GetCameraState()> }, written by tools/pipeline.py play ... camera.json out.png
+-- replay/shot.lua: return { frame = <frame>, state = <Spring.GetCameraState()> }
 if not VFS.FileExists("replay/shot.lua") then return end
 local shot = VFS.Include("replay/shot.lua")
 local frame = shot.frame

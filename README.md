@@ -2,7 +2,7 @@
 ### (Prototype)
 Rewind, pause and scrub [Beyond All Reason](https://www.beyondallreason.info/) replays, rendered by BAR itself.
 
-**[Download v0.4.1](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.4.1)** (Linux and Windows)
+**[Download the player](https://github.com/burnhamrobertp/BAR-Rewind/releases/latest)** (Linux and Windows)
 
 ### Jump anywhere
 
@@ -24,55 +24,57 @@ Up/Down change the speed. At 64x a whole match unwinds in seconds.
 
 ## How to use
 
-Needs BAR installed and [Python 3](https://www.python.org/downloads/) (Windows: tick "Add to PATH").
+Replays are parsed by a BAR Rewind server's workers and watched with the player. Needs BAR installed.
 
-1. Download `bar-rewind-linux.tar.gz` or `bar-rewind-windows.zip` from the
-   [release](https://github.com/burnhamrobertp/BAR-Rewind/releases/tag/v0.4.1) and extract it.
-2. Run `bar-rewind` (Linux) or `bar-rewind.bat` (Windows). The app opens in your **browser**.
-3. Check the **BAR data folder** at the top. It's usually found on its own; if not, paste it and press Enter.
-   It's the folder BAR keeps its data in, with `engine/`, `maps/` and `demos/` inside, not the install folder:
-   - Linux Flatpak: `~/.var/app/info.beyondallreason.bar/data`
-   - Linux AppImage: `~/.local/state/Beyond All Reason`
-   - Windows: `%LOCALAPPDATA%\Programs\Beyond-All-Reason\data`
-4. Click **Parse** on a replay (a minute or more, depending on its length), then **Play**.
+1. Download `bar-rewind.exe` (Windows) or `bar-rewind-player-linux` (Linux) from the
+   [latest release](https://github.com/burnhamrobertp/BAR-Rewind/releases/latest).
+2. Run it once: `.curves` files and Watch links on a BAR Rewind server now open with it (on Linux through
+   a desktop entry in `~/.local/share/applications`, which needs `xdg-utils`). `--uninstall` undoes that.
+3. Click Watch on a parsed replay, or open a `.curves` file.
+
+The first Watch link from a server asks whether to trust that server; the answer is kept in
+`bar-rewind.json` (`trusted_hosts`). The player puts the BAR Rewind game in BAR's data folder and fetches
+the replay's engine, game and map when they're missing. If BAR's data folder isn't where its installer puts
+it, set `bar_data` in `bar-rewind.json` to it: the folder with `engine/`, `maps/` and `demos/` inside.
 
 In the player a timeline runs along the bottom of the screen: play/pause and rewind/fast-forward buttons,
 a scrub bar to drag with time marks under it, and the replay time and speed; the game info panel under the
 player list shows the replay time and speed too. Space play/pause, R reverse; with the mouse over the
 timeline, Left/Right skip 10 s and Up/Down change speed.
-The app quits on its own about 90 s after you close its browser tab.
 
-Map previews of `.sd7` maps need [7-Zip](https://www.7-zip.org/) (`7z` on Linux); everything else works without it.
-
-### Just watching a parsed replay
-
-A `.curves` file holds everything playback needs, so watching one someone else parsed needs only BAR and
-the player (`bar-rewind.exe` on Windows, `bar-rewind-player-linux` on Linux), no Python or app. Run it
-once and `.curves` files and Watch links on a BAR Rewind server open with it (on Linux through a desktop
-entry in `~/.local/share/applications`, which needs `xdg-utils`). The first Watch link from a server asks
-whether to trust that server; the answer is kept in `bar-rewind.json` (`trusted_hosts`). It puts the player
-in BAR's data folder and fetches the replay's engine, game and map when they're missing. `--uninstall`
-undoes the registration.
-
-## Build from source (custom install)
-
-Needs [Zig](https://ziglang.org/) 0.17 and Python 3.
+### Parsing a replay yourself
 
 ```sh
-zig build run                        # the app
-zig build run -Ddemo=<replay.sdfz>   # parse (once, cached) and play one replay
+bake parse <replay.sdfz> <out.curves> --bar <folder>
+```
+
+`bake.exe` (Windows) or `bake-linux` (Linux) comes with each release. `--bar` is a BAR data folder kept
+for parsing: bake rewrites its widget config to switch BAR's interface off, so never point it at the BAR
+install you play with. Its `engine/` folder needs a `recoil_*` engine (for BAR's pr-downloader); bake
+fetches the replay's own engine, game and map. Progress comes out as one JSON object per line, the
+engine's output goes to `<out.curves>.log`, and `--widgets <folder>` runs the widgets in that folder
+during the parse too.
+
+## Build from source
+
+Needs [Zig](https://ziglang.org/) 0.17.
+
+```sh
+zig build                                # bake and the player, in zig-out/bin
+zig build run -- <replay.curves>         # play a replay
+zig build bake -- parse <replay.sdfz> <out.curves> --bar <folder>
 zig build test
-zig build dist                       # the packages, and the player alone (dist/bar-rewind.exe, dist/bar-rewind-player-linux)
+zig build dist                           # both for Windows and Linux, in zig-out/dist
 ```
 
 - `lua/dump_replay.lua`: the BAR widget that records a replay while the headless engine re-simulates it
+- `src/parse.zig`: `bake parse`, which runs the engine on a replay with the dump widgets, then bakes
 - `src/bake.zig`, `src/curves.zig`: recording → `.curves` (keyframes thinned with Douglas–Peucker), and
   `bake export-lua`, which writes them in the form the player reads
 - `src/player.zig`: the player, which plays a `.curves` with the mutator built in
 - `recoil/barrewind.sdd`: the BAR Rewind game (a mutator on top of BAR) that plays `.curves`: the
   `replay_player`, `replay_eco` and `replay_view` gadgets, the chat, map-mark and timeline widgets, and
   the game info panel that stands in for BAR's
-- `tools/pipeline.py`: parse and play (also a CLI, see its header); `tools/ui.py`: the browser app
 
 ## How it works
 
@@ -127,13 +129,11 @@ A 16-minute match parses in under a minute, to 12 MB.
 
 ## Files it creates
 
-- **Output folder** (default `out/` next to the app; change it at the top of the page): parsed replays
-  (`curves/`), map previews, and the logs `curves/dump.log` (parse) and `play.log` (play).
-- **Settings**: `bar-rewind.json` in `~/.config/` (Linux) or `%APPDATA%` (Windows), holding the two folders.
-- **In BAR's data folder**: `games/barrewind.sdd`, the player BAR loads. Parsing briefly adds
-  `LuaUI/Widgets/dump_replay.lua` and removes it again.
-
-If something goes wrong, the page shows the end of the log; the full logs are in the output folder.
+- **Settings**: `bar-rewind.json` in `~/.config/` (Linux) or `%APPDATA%` (Windows): the servers you trust
+  and, if set, BAR's data folder.
+- **Cache**: `~/.cache/bar-rewind` (Linux) or `%LOCALAPPDATA%\bar-rewind` (Windows): downloaded replays
+  (`replays/`), the last start script and `play.log`.
+- **In BAR's data folder**: `games/barrewind.sdd`, the player BAR loads.
 
 ## AI disclosure
 

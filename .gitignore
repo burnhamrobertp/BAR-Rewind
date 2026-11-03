@@ -17,12 +17,8 @@ CLAUDE.local.md
 .vscode/
 *.swp
 
-# python
-__pycache__/
-
 # generated per match by bake export-lua (player names)
 recoil/barrewind.sdd/replay/
-dist/
 
 # raw screen recordings (the README uses the small ones in docs/)
 /*.gif

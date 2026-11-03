@@ -383,7 +383,7 @@ local function passedShare(r, from, to, team)
 	return false
 end
 
--- teams: replay team ids map onto the script's teams (pipeline.py's start script numbers them the same)
+-- teams: replay team ids map onto the script's teams (bake's start script numbers them the same)
 local gaia = Spring.GetGaiaTeamID()
 local function teamOf(replayTeam)
 	local info = M.teams[replayTeam]
