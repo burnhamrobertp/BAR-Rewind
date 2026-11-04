@@ -2,6 +2,11 @@
 ### (Prototype)
 Rewind, pause and scrub [Beyond All Reason](https://www.beyondallreason.info/) replays, rendered by BAR itself.
 
+A fork of [LuEklund/BAR-Rewind](https://github.com/LuEklund/BAR-Rewind) that has since gone its own way: replays
+are queued on [bar-rewind-server](https://github.com/burnhamrobertp/bar-rewind-server) and parsed by `bake parse` on
+moderators' machines running [bar-rewind-worker](https://github.com/burnhamrobertp/bar-rewind-worker), the browser
+app and the Python pipeline are gone, and releases here carry a signed manifest that the workers check.
+
 **[Download the player](https://github.com/burnhamrobertp/BAR-Rewind/releases/latest)** (Linux and Windows)
 
 ### Jump anywhere
