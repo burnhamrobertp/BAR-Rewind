@@ -1,11 +1,11 @@
-# Pushing a v* tag builds bake and the player for Windows and Linux, signs their manifest with the
+# Pushing a version tag (like 0.5.0) builds bake and the player for Windows and Linux, signs their manifest with the
 # release key and puts them in a draft release. The key lives in the `release` environment, so a run
 # waits for whoever that environment names as reviewers; release-key.pub is its public half.
 name: release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
 
 permissions: {}
 

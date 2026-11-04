@@ -129,16 +129,16 @@ test "a signed manifest checks out, and stops checking out when a file or the ma
     const pair = try Ed25519.KeyPair.generateDeterministic(@splat(7));
     const other = try Ed25519.KeyPair.generateDeterministic(@splat(8));
 
-    try writeManifest(io, gpa, path, "v1.2.3", pair);
+    try writeManifest(io, gpa, path, "1.2.3", pair);
     try verify(io, gpa, path, pair.public_key);
     try std.testing.expectError(error.BadSignature, verify(io, gpa, path, other.public_key));
 
     try tmp.dir.writeFile(io, .{ .sub_path = "bake-linux", .data = "bakf" });
     try std.testing.expectError(error.FileDoesNotMatch, verify(io, gpa, path, pair.public_key));
 
-    try writeManifest(io, gpa, path, "v1.2.3", pair);
+    try writeManifest(io, gpa, path, "1.2.3", pair);
     const json = try tmp.dir.readFileAlloc(io, "manifest.json", gpa, .limited(1 << 20));
-    const forged = try std.mem.replaceOwned(u8, gpa, json, "v1.2.3", "v9.9.9");
+    const forged = try std.mem.replaceOwned(u8, gpa, json, "1.2.3", "9.9.9");
     try tmp.dir.writeFile(io, .{ .sub_path = "manifest.json", .data = forged });
     try std.testing.expectError(error.BadSignature, verify(io, gpa, path, pair.public_key));
 }
