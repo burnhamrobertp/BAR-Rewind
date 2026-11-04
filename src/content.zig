@@ -161,8 +161,14 @@ pub fn fetchContent(ctx: Ctx, bar: []const u8, missing: []const [2][]const u8, o
     if (term != .exited or term.exited != 0) return error.FetchFailed;
 }
 
+/// BAR's launcher installs an engine as engine/recoil_<version>, pr-downloader as engine/<platform>/<version>:
+/// whichever is there, else the launcher's
 pub fn engineDir(ctx: Ctx, bar: []const u8, engine: []const u8) ![]u8 {
-    return join(ctx, &.{ bar, "engine", try std.fmt.allocPrint(ctx.gpa, "recoil_{s}", .{engine}) });
+    const launcher = try join(ctx, &.{ bar, "engine", try std.fmt.allocPrint(ctx.gpa, "recoil_{s}", .{engine}) });
+    if (exists(ctx, launcher)) return launcher;
+    const downloaded = try join(ctx, &.{ bar, "engine", if (builtin.os.tag == .windows) "windows64" else "linux64", engine });
+
+    return if (exists(ctx, downloaded)) downloaded else launcher;
 }
 
 /// What playing or parsing a match on `engine`, `game` and `map` needs that `bar` lacks, as

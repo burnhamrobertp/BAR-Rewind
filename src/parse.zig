@@ -137,13 +137,17 @@ fn simulate(ctx: Ctx, o: Options, demo: bake.Demo, log: Io.File, progress: *Prog
 
     const started = Io.Timestamp.now(ctx.io, .awake);
     const started_real = Io.Timestamp.now(ctx.io, .real);
-    var child = try std.process.spawn(ctx.io, .{
+    var child = std.process.spawn(ctx.io, .{
         .argv = &.{ exe, "--write-dir", o.bar, "--isolation", o.demo },
         .stdin = .ignore,
         .stdout = .{ .file = log },
         .stderr = .{ .file = log },
         .create_no_window = true,
-    });
+    }) catch |err| {
+        engine_message = try std.fmt.allocPrint(ctx.gpa, "cannot start the engine {s}: {s}", .{ exe, @errorName(err) });
+
+        return error.EngineFailed;
+    };
     const id = child.id.?;
     var waiter: Waiter = .{ .child = &child, .io = ctx.io };
     const thread = std.Thread.spawn(.{}, Waiter.wait, .{&waiter}) catch |err| {
