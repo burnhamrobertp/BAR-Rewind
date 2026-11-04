@@ -8,16 +8,19 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const bake = @import("bake.zig");
+const content = @import("content.zig");
 const curves = @import("curves.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const windows = builtin.os.tag == .windows;
-const exe_suffix = if (windows) ".exe" else "";
+const exe_suffix = content.exe_suffix;
+const join = content.join;
+const exists = content.exists;
 const mutator_tar = @embedFile("mutator.tar");
 const mutator_name = "barrewind.sdd";
 
-const Ctx = struct { io: Io, gpa: Allocator, env: *std.process.Environ.Map };
+const Ctx = content.Ctx;
 
 var failure: ?[]const u8 = null;
 
@@ -52,16 +55,6 @@ fn pause(ctx: Ctx) void {
     var buffer: [1]u8 = undefined;
     var stdin = Io.File.stdin().readerStreaming(ctx.io, &buffer);
     _ = stdin.interface.takeByte() catch {};
-}
-
-fn join(ctx: Ctx, parts: []const []const u8) ![]u8 {
-    return std.fs.path.join(ctx.gpa, parts);
-}
-
-fn exists(ctx: Ctx, path: []const u8) bool {
-    Io.Dir.cwd().access(ctx.io, path, .{}) catch return false;
-
-    return true;
 }
 
 // registration ------------------------------------------------------------------------------------
@@ -355,145 +348,6 @@ fn barData(ctx: Ctx) ![]const u8 {
     return fail(ctx, "BAR is not installed where its installer puts it. Put {{\"bar_data\": \"<BAR's data folder>\"}} in {s}", .{config});
 }
 
-/// Lowercased names of every map and game the engine's last archive scan found
-fn scannedNames(ctx: Ctx, bar: []const u8) !std.StringHashMapUnmanaged(void) {
-    var names: std.StringHashMapUnmanaged(void) = .empty;
-    var dir = Io.Dir.cwd().openDir(ctx.io, try join(ctx, &.{ bar, "cache" }), .{ .iterate = true }) catch return names;
-    defer dir.close(ctx.io);
-    var newest: ?[]const u8 = null;
-    var newest_time: i96 = 0;
-    var it = dir.iterate();
-    while (try it.next(ctx.io)) |entry| {
-        if (!std.mem.startsWith(u8, entry.name, "ArchiveCache") or !std.mem.endsWith(u8, entry.name, ".lua")) continue;
-        const stat = try dir.statFile(ctx.io, entry.name, .{});
-        if (newest == null or stat.mtime.nanoseconds > newest_time) {
-            newest = try ctx.gpa.dupe(u8, entry.name);
-            newest_time = stat.mtime.nanoseconds;
-        }
-    }
-    const name = newest orelse return names;
-    const text = try dir.readFileAlloc(ctx.io, name, ctx.gpa, .limited(256 << 20));
-    const key = "name = \"";
-    var i: usize = 0;
-    while (std.mem.indexOfPos(u8, text, i, key)) |at| {
-        const start = at + key.len;
-        const end = std.mem.indexOfScalarPos(u8, text, start, '"') orelse break;
-        try names.put(ctx.gpa, try std.ascii.allocLowerString(ctx.gpa, text[start..end]), {});
-        i = end;
-    }
-
-    return names;
-}
-
-const RapidEntry = struct { tag: []const u8, package: []const u8, name: []const u8 };
-
-/// Every line of every rapid repository's versions.gz: tag,md5,depends,name
-fn rapidEntries(ctx: Ctx, bar: []const u8) ![]RapidEntry {
-    var entries: std.ArrayList(RapidEntry) = .empty;
-    var rapid = Io.Dir.cwd().openDir(ctx.io, try join(ctx, &.{ bar, "rapid" }), .{ .iterate = true }) catch return entries.items;
-    defer rapid.close(ctx.io);
-    var hosts = rapid.iterate();
-    while (try hosts.next(ctx.io)) |host| {
-        if (host.kind != .directory) continue;
-        var host_dir = try rapid.openDir(ctx.io, host.name, .{ .iterate = true });
-        defer host_dir.close(ctx.io);
-        var repos = host_dir.iterate();
-        while (try repos.next(ctx.io)) |repo| {
-            if (repo.kind != .directory) continue;
-            const path = try join(ctx, &.{ repo.name, "versions.gz" });
-            const compressed = host_dir.readFileAlloc(ctx.io, path, ctx.gpa, .limited(256 << 20)) catch continue;
-            var in: Io.Reader = .fixed(compressed);
-            var window: [std.compress.flate.max_window_len]u8 = undefined;
-            var gz: std.compress.flate.Decompress = .init(&in, .gzip, &window);
-            const text = gz.reader.allocRemaining(ctx.gpa, .limited(1 << 30)) catch continue;
-            var lines = std.mem.splitScalar(u8, text, '\n');
-            while (lines.next()) |line| {
-                var parts = std.mem.splitScalar(u8, std.mem.trimEnd(u8, line, "\r"), ',');
-                const tag = parts.next() orelse continue;
-                const package = parts.next() orelse continue;
-                _ = parts.next() orelse continue;
-                try entries.append(ctx.gpa, .{ .tag = tag, .package = package, .name = parts.rest() });
-            }
-        }
-    }
-
-    return entries.items;
-}
-
-/// The archive name rapid's byar:test tag points at, for replays whose game is unknown
-fn newestGame(ctx: Ctx, rapid: []const RapidEntry) ![]const u8 {
-    for (rapid) |e| if (std.mem.eql(u8, e.tag, "byar:test")) return e.name;
-
-    return fail(ctx, "no BAR game installed (no byar:test in rapid's versions)", .{});
-}
-
-fn gameInstalled(ctx: Ctx, bar: []const u8, game: []const u8, scanned: std.StringHashMapUnmanaged(void), rapid: []const RapidEntry) !bool {
-    if (std.mem.indexOf(u8, game, "$VERSION") != null) return true;
-    if (scanned.contains(try std.ascii.allocLowerString(ctx.gpa, game))) return true;
-    for (rapid) |e| if (std.mem.eql(u8, e.name, game)) {
-        const package = try std.fmt.allocPrint(ctx.gpa, "{s}.sdp", .{e.package});
-        if (exists(ctx, try join(ctx, &.{ bar, "packages", package }))) return true;
-    };
-
-    return false;
-}
-
-fn mapInstalled(ctx: Ctx, bar: []const u8, map: []const u8, scanned: std.StringHashMapUnmanaged(void)) !bool {
-    const lower = try std.ascii.allocLowerString(ctx.gpa, map);
-    if (scanned.contains(lower)) return true;
-    for (lower) |*c| if (!std.ascii.isAlphanumeric(c.*) and c.* != '.' and c.* != '-') {
-        c.* = '_';
-    };
-    for ([_][]const u8{ ".sd7", ".sdz" }) |ext| {
-        const file = try std.fmt.allocPrint(ctx.gpa, "{s}{s}", .{ lower, ext });
-        if (exists(ctx, try join(ctx, &.{ bar, "maps", file }))) return true;
-    }
-
-    return false;
-}
-
-/// BAR's own downloader: shipped with every engine, and beside the launcher
-fn prDownloader(ctx: Ctx, bar: []const u8) ![]const u8 {
-    const name = "pr-downloader" ++ exe_suffix;
-    var engines: std.ArrayList([]const u8) = .empty;
-    if (Io.Dir.cwd().openDir(ctx.io, try join(ctx, &.{ bar, "engine" }), .{ .iterate = true })) |dir_const| {
-        var dir = dir_const;
-        defer dir.close(ctx.io);
-        var it = dir.iterate();
-        while (try it.next(ctx.io)) |entry| if (std.mem.startsWith(u8, entry.name, "recoil_")) try engines.append(ctx.gpa, try ctx.gpa.dupe(u8, entry.name));
-    } else |_| {}
-    std.mem.sort([]const u8, engines.items, {}, struct {
-        fn newer(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .gt;
-        }
-    }.newer);
-    for (engines.items) |e| {
-        const p = try join(ctx, &.{ bar, "engine", e, name });
-        if (exists(ctx, p)) return p;
-    }
-    const beside = try join(ctx, &.{ std.fs.path.dirname(bar) orelse bar, "bin", name });
-    if (exists(ctx, beside)) return beside;
-
-    return fail(ctx, "no pr-downloader in BAR's engine or bin folders", .{});
-}
-
-fn fetchContent(ctx: Ctx, bar: []const u8, missing: []const [2][]const u8) !void {
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(ctx.gpa, &.{ try prDownloader(ctx, bar), "--filesystem-writepath", bar });
-    for (missing) |m| {
-        try argv.appendSlice(ctx.gpa, &.{ m[0], m[1] });
-        std.debug.print("downloading {s} {s}\n", .{ m[0]["--download-".len..], m[1] });
-    }
-    // the repositories BAR's launcher points pr-downloader at
-    var env = try ctx.env.clone(ctx.gpa);
-    try env.put("PRD_RAPID_REPO_MASTER", "https://repos-cdn.beyondallreason.dev/repos.gz");
-    try env.put("PRD_HTTP_SEARCH_URL", "https://files-cdn.beyondallreason.dev/find");
-    try env.put("PRD_RAPID_USE_STREAMER", "false");
-    var child = try std.process.spawn(ctx.io, .{ .argv = argv.items, .environ_map = &env });
-    const term = try child.wait(ctx.io);
-    if (term != .exited or term.exited != 0) return fail(ctx, "pr-downloader could not fetch what the replay needs (see its output above)", .{});
-}
-
 // play ------------------------------------------------------------------------------------------------
 
 fn play(ctx: Ctx, path: []const u8) !void {
@@ -506,18 +360,21 @@ fn play(ctx: Ctx, path: []const u8) !void {
         path, version, curves.version, if (version > curves.version) "download the newest bar-rewind" else "parse the replay again",
     });
     const file = curves.File.view(bytes) catch return fail(ctx, "{s} is damaged", .{path});
-    const meta = try bake.parseMeta(ctx.gpa, file);
+    const meta = bake.parseMeta(ctx.gpa, file) catch return fail(ctx, "{s} is damaged", .{path});
 
-    const rapid = try rapidEntries(ctx, bar);
+    const rapid = try content.rapidEntries(ctx, bar);
     const recorded_game = bake.scriptField(file.demo_script, "gametype");
-    const game = if (recorded_game.len > 0 and !std.mem.startsWith(u8, recorded_game, "BAR Rewind")) recorded_game else try newestGame(ctx, rapid);
-    const engine_dir = try join(ctx, &.{ bar, "engine", try std.fmt.allocPrint(ctx.gpa, "recoil_{s}", .{file.engine}) });
-    const scanned = try scannedNames(ctx, bar);
-    var missing: std.ArrayList([2][]const u8) = .empty;
-    if (!exists(ctx, engine_dir)) try missing.append(ctx.gpa, .{ "--download-engine", file.engine });
-    if (!try gameInstalled(ctx, bar, game, scanned, rapid)) try missing.append(ctx.gpa, .{ "--download-game", game });
-    if (!try mapInstalled(ctx, bar, meta.map.name, scanned)) try missing.append(ctx.gpa, .{ "--download-map", meta.map.name });
-    if (missing.items.len > 0) try fetchContent(ctx, bar, missing.items);
+    const game = if (recorded_game.len > 0 and !std.mem.startsWith(u8, recorded_game, "BAR Rewind")) recorded_game else content.newestGame(rapid) catch
+        return fail(ctx, "no BAR game installed (no byar:test in rapid's versions)", .{});
+    if (!bake.engineVersion(file.engine) or !bake.contentName(game) or !bake.contentName(meta.map.name))
+        return fail(ctx, "{s} names an engine, game or map that BAR Rewind will not fetch or load", .{path});
+    const engine_dir = try content.engineDir(ctx, bar, file.engine);
+    const missing = try content.missingContent(ctx, bar, file.engine, game, meta.map.name, rapid);
+    if (missing.len > 0) content.fetchContent(ctx, bar, missing, null) catch |err| switch (err) {
+        error.NoPrDownloader => return fail(ctx, "no pr-downloader in BAR's engine or bin folders", .{}),
+        error.FetchFailed => return fail(ctx, "pr-downloader could not fetch what the replay needs (see its output above)", .{}),
+        else => return err,
+    };
 
     std.debug.print("preparing {s}\n", .{std.fs.path.basename(path)});
     const mutator = try join(ctx, &.{ bar, "games", mutator_name });
@@ -534,12 +391,18 @@ fn play(ctx: Ctx, path: []const u8) !void {
         const patched = try std.fmt.allocPrint(ctx.gpa, "{s} \"{s}\" {s}", .{ modinfo[0..start], game, modinfo[end..] });
         try dir.writeFile(ctx.io, .{ .sub_path = "modinfo.lua", .data = patched });
     }
-    try bake.exportFile(ctx.io, ctx.gpa, file, try join(ctx, &.{ mutator, "replay" }));
+    bake.exportFile(ctx.io, ctx.gpa, file, try join(ctx, &.{ mutator, "replay" })) catch |err| switch (err) {
+        error.InvalidCharacter, error.Overflow => return fail(ctx, "{s} is damaged", .{path}),
+        else => return err,
+    };
 
     const cache = try cacheDir(ctx);
     try Io.Dir.cwd().createDirPath(ctx.io, cache);
     var script: Io.Writer.Allocating = .init(ctx.gpa);
-    try bake.startScript(&script.writer, ctx.gpa, meta, file.demo_script);
+    bake.startScript(&script.writer, ctx.gpa, meta, file.demo_script) catch |err| switch (err) {
+        error.InvalidCharacter, error.Overflow, error.BadMapName => return fail(ctx, "{s} is damaged", .{path}),
+        else => return err,
+    };
     const script_path = try join(ctx, &.{ cache, "play_script.txt" });
     try Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = script_path, .data = script.written() });
 

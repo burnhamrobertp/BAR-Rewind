@@ -1,0 +1,48 @@
+# Pushing a version tag (like 0.5.0) builds bake and the player for Windows and Linux, signs their manifest with the
+# release key and puts them in a draft release. The key lives in the `release` environment, so a run
+# waits for whoever that environment names as reviewers; release-key.pub is its public half.
+name: release
+
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Zig 0.17.0
+        run: |
+          curl -sSfLo zig.tar.xz https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+          echo "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026  zig.tar.xz" | sha256sum -c -
+          tar -xJf zig.tar.xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
+
+      - name: Test
+        run: zig build test
+
+      - name: Build
+        run: zig build dist
+
+      - name: Sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          zig build sign -- manifest zig-out/dist "$TAG"
+          zig build sign -- verify zig-out/dist "$(cat release-key.pub)"
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" zig-out/dist/* --draft --verify-tag --title "BAR-Rewind $TAG" --generate-notes

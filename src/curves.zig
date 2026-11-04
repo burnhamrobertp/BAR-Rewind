@@ -6,6 +6,7 @@ const std = @import("std");
 pub const magic = "BRC1".*;
 pub const version = 11;
 pub const alive_forever = std.math.maxInt(u32);
+pub const max_frames = 30 * 60 * 60 * 24;
 
 pub fn Key(comptime n: usize) type {
     return extern struct {
@@ -171,7 +172,8 @@ pub const Header = extern struct {
     counts: [section_count]u64,
 };
 
-/// Read-only views into one .curves blob. Holds no memory of its own.
+/// Read-only views into one .curves blob. Holds no memory of its own. A viewed file came from
+/// someone else's machine: view() rejects any span or index that points outside its arrays.
 pub const File = struct {
     header: *const Header,
     meta: []const u8,
@@ -203,19 +205,61 @@ pub const File = struct {
         if (bytes.len < @sizeOf(Header)) return error.BadCurves;
         const header: *const Header = @ptrCast(bytes.ptr);
         if (!std.mem.eql(u8, &header.magic, &magic) or header.version != version) return error.BadCurves;
+        if (header.last_frame < header.first_frame or header.last_frame > max_frames) return error.BadCurves;
         var file: File = undefined;
         file.header = header;
         inline for (section_names, 0..) |name, i| {
             const T = SectionType(@enumFromInt(i));
             const offset = header.offsets[i];
             const count = header.counts[i];
-            if (offset + count * @sizeOf(T) > bytes.len) return error.BadCurves;
+            const size = std.math.mul(u64, count, @sizeOf(T)) catch return error.BadCurves;
+            const end = std.math.add(u64, offset, size) catch return error.BadCurves;
+            if (end > bytes.len or offset % @alignOf(T) != 0) return error.BadCurves;
             const ptr: [*]const T = @ptrCast(@alignCast(bytes.ptr + offset));
-            @field(file, name) = ptr[0..count];
+            @field(file, name) = ptr[0..@intCast(count)];
         }
+        try file.checkReferences();
+
         return file;
     }
+
+    fn checkReferences(file: File) error{BadCurves}!void {
+        // export walks every unit's and track's keys: spans sharing keys would multiply that work
+        var transforms: u64 = 0;
+        var statuses: u64 = 0;
+        var targets: u64 = 0;
+        var tracks: u64 = 0;
+        var poses: u64 = 0;
+        for (file.units) |u| {
+            try within(u.transforms, file.transforms.len);
+            try within(u.statuses, file.statuses.len);
+            try within(u.targets, file.targets.len);
+            try within(u.tracks, file.tracks.len);
+            transforms += u.transforms.count;
+            statuses += u.statuses.count;
+            targets += u.targets.count;
+            tracks += u.tracks.count;
+        }
+        for (file.tracks) |track| {
+            try within(track.pose, file.pose_keys.len);
+            poses += track.pose.count;
+        }
+        if (transforms > file.transforms.len or statuses > file.statuses.len or targets > file.targets.len or
+            tracks > file.tracks.len or poses > file.pose_keys.len) return error.BadCurves;
+        for (file.projectiles) |p| try within(p.keys, file.projectile_keys.len);
+        for (file.queues) |q| {
+            if (q.unit >= file.units.len) return error.BadCurves;
+            try within(q.items, file.queue_items.len);
+        }
+        for (file.team_keys) |k| if (k.unit >= file.units.len) return error.BadCurves;
+        for (file.cursor_tracks) |track| try within(track.keys, file.cursor_keys.len);
+        for (file.camera_keys) |k| try within(k.values, file.camera_values.len);
+    }
 };
+
+fn within(span: Span, len: usize) error{BadCurves}!void {
+    if (@as(u64, span.first) + span.count > len) return error.BadCurves;
+}
 
 // evaluation -----------------------------------------------------------------------------------
 
