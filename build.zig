@@ -4,16 +4,18 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{ .default_target = .{ .abi = .gnu } });
     const optimize = b.standardOptimizeOption(.{});
     const mutator_tar = packMutator(b);
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", b.option([]const u8, "version", "the release this build is (default 0.0.0-dev)") orelse "0.0.0-dev");
 
     // bake: demo -> recording -> curves, and what the player reads from them --------------------
-    const bake = addBake(b, target);
+    const bake = addBake(b, target, options);
     b.installArtifact(bake);
     const run_bake = b.addRunArtifact(bake);
     run_bake.addPassthruArgs();
     b.step("bake", "Run bake: zig build bake -- parse <demo.sdfz> <out.curves> --bar <BAR data folder>").dependOn(&run_bake.step);
 
     // bar-rewind: the player, with the mutator inside ----------------------------------------------
-    const player = addPlayer(b, target, mutator_tar);
+    const player = addPlayer(b, target, mutator_tar, options);
     b.installArtifact(player);
     const run_player = b.addRunArtifact(player);
     run_player.addPassthruArgs();
@@ -27,7 +29,7 @@ pub fn build(b: *std.Build) void {
     };
     for (platforms) |p| {
         const resolved = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = p.query, .cpu_features = "baseline" }) catch unreachable);
-        for ([_]struct { *std.Build.Step.Compile, []const u8 }{ .{ addBake(b, resolved), p.bake }, .{ addPlayer(b, resolved, mutator_tar), p.player } }) |exe| {
+        for ([_]struct { *std.Build.Step.Compile, []const u8 }{ .{ addBake(b, resolved, options), p.bake }, .{ addPlayer(b, resolved, mutator_tar, options), p.player } }) |exe| {
             dist.dependOn(&b.addInstallArtifact(exe[0], .{
                 .dest_dir = .{ .override = .{ .custom = "dist" } },
                 .dest_sub_path = exe[1],
@@ -52,11 +54,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }) });
     embedLua(b, tests.root_module);
+    tests.root_module.addOptions("options", options);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
-fn addBake(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step.Compile {
+fn addBake(b: *std.Build, target: std.Build.ResolvedTarget, options: *std.Build.Step.Options) *std.Build.Step.Compile {
     const bake = b.addExecutable(.{
         .name = "bake",
         .root_module = b.createModule(.{
@@ -68,11 +71,12 @@ fn addBake(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step.Comp
         }),
     });
     embedLua(b, bake.root_module);
+    bake.root_module.addOptions("options", options);
 
     return bake;
 }
 
-fn addPlayer(b: *std.Build, target: std.Build.ResolvedTarget, mutator_tar: std.Build.LazyPath) *std.Build.Step.Compile {
+fn addPlayer(b: *std.Build, target: std.Build.ResolvedTarget, mutator_tar: std.Build.LazyPath, options: *std.Build.Step.Options) *std.Build.Step.Compile {
     const player = b.addExecutable(.{
         .name = "bar-rewind",
         .root_module = b.createModule(.{
@@ -84,6 +88,7 @@ fn addPlayer(b: *std.Build, target: std.Build.ResolvedTarget, mutator_tar: std.B
         }),
     });
     player.root_module.addAnonymousImport("mutator.tar", .{ .root_source_file = mutator_tar });
+    player.root_module.addOptions("options", options);
 
     return player;
 }
