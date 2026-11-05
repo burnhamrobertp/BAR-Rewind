@@ -73,7 +73,7 @@ zig build dist                           # both for Windows and Linux, in zig-ou
 ```
 
 Pushing a version tag (like `0.5.0`) builds a release: GitHub Actions tests, builds `dist`, signs a `manifest.json` of the
-files with the release key (`release-key.pub` is its public half) and drafts the release.
+files with the release key (`release-key.pub` is its public half) and publishes the release.
 
 - `lua/dump_replay.lua`: the BAR widget that records a replay while the headless engine re-simulates it
 - `src/parse.zig`: `bake parse`, which runs the engine on a replay with the dump widgets, then bakes
