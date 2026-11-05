@@ -11,6 +11,7 @@ const builtin = @import("builtin");
 const content = @import("content.zig");
 const curves = @import("curves.zig");
 const parse = @import("parse.zig");
+const release = @import("options").version;
 
 const Unit = curves.Unit;
 const TransformKey = curves.TransformKey;
@@ -408,7 +409,11 @@ pub fn main(init: std.process.Init) !void {
     if (args.len == 3 and std.mem.eql(u8, args[1], "info")) return printInfo(io, gpa, args[2]);
     if (args.len == 3 and std.mem.eql(u8, args[1], "events")) return printEvents(io, gpa, args[2]);
     if (args.len == 2 and std.mem.eql(u8, args[1], "version")) {
-        std.log.info("curves version {d}", .{curves.version});
+        var buffer: [256]u8 = undefined;
+        var out = std.Io.File.stdout().writerStreaming(io, &buffer);
+        try out.interface.print("{{\"version\":\"{s}\",\"curves_version\":{d}}}\n", .{ release, curves.version });
+        try out.interface.flush();
+
         return;
     }
     if (args.len != 4) {
