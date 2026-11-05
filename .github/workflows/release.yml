@@ -1,6 +1,6 @@
 # Pushing a version tag (like 0.5.0) builds bake and the player for Windows and Linux, signs their manifest with the
-# release key and puts them in a draft release. The key lives in the `release` environment, so a run
-# waits for whoever that environment names as reviewers; release-key.pub is its public half.
+# release key and publishes the release. The key lives in the `release` environment, which only version tags
+# can use; release-key.pub is its public half.
 name: release
 
 on:
@@ -45,4 +45,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" zig-out/dist/* --draft --verify-tag --title "BAR-Rewind $TAG" --generate-notes
+        run: gh release create "$TAG" zig-out/dist/* --verify-tag --latest --title "BAR-Rewind $TAG" --generate-notes
