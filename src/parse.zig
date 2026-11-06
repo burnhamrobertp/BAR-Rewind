@@ -248,14 +248,21 @@ fn loadMessage(text: []const u8) ?[]const u8 {
 }
 
 /// The engine's own reason for quitting: its Fatal errorMsg. The message quotes names itself, so it
-/// ends at the next field, not the next quote.
+/// ends at the next field, not the next quote. Cut to what the server keeps of a job's error, so the
+/// line bake prints it on stays short enough for a worker's line buffer.
 fn engineError(text: []const u8) ?[]const u8 {
     const key = "errorMsg=\"";
     const at = std.mem.lastIndexOf(u8, text, key) orelse return null;
     const rest = text[at + key.len ..];
+    const message = rest[0 .. std.mem.indexOf(u8, rest, "\" msgCaption=") orelse return null];
+    if (message.len <= max_error_len) return message;
+    var end: usize = max_error_len;
+    while (end > 0 and message[end] & 0xC0 == 0x80) end -= 1;
 
-    return rest[0 .. std.mem.indexOf(u8, rest, "\" msgCaption=") orelse return null];
+    return message[0..end];
 }
+
+const max_error_len = 2000;
 
 /// Copies the .lua widgets in `from` into `widgets`, after removing the ones copied last time (one
 /// may have been taken out), and returns their names
@@ -382,4 +389,12 @@ test "progress and failures come out of the engine's log" {
 
     try std.testing.expectEqualStrings("map \"x\" not found", engineError("[Fatal] errorMsg=\"map \"x\" not found\" msgCaption=\"Spring: caught\"").?);
     try std.testing.expect(engineError("errorMsg=\"cut off") == null);
+    const gpa = std.testing.allocator;
+    var long: std.ArrayList(u8) = .empty;
+    defer long.deinit(gpa);
+    try long.appendSlice(gpa, "errorMsg=\"");
+    for (0..1500) |_| try long.appendSlice(gpa, "\xc3\xa9");
+    try long.appendSlice(gpa, "\" msgCaption=\"x\"");
+    const cut = engineError(long.items).?;
+    try std.testing.expect(cut.len <= max_error_len and std.unicode.utf8ValidateSlice(cut));
 }

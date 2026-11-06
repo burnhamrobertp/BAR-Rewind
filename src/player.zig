@@ -222,9 +222,16 @@ fn download(ctx: Ctx, link: []const u8) ![]const u8 {
         std.debug.print("\r  {d} MB, done\n", .{got >> 20});
     }
 
+    // `dest` only ever holds a whole replay: one that exists is played without downloading again
     if (gzipped) {
-        try gunzip(ctx, part, dest);
+        const unpacked = try std.fmt.allocPrint(ctx.gpa, "{s}.unpacked", .{dest});
+        gunzip(ctx, part, unpacked) catch |err| {
+            Io.Dir.cwd().deleteFile(ctx.io, unpacked) catch {};
+
+            return fail(ctx, "the download is damaged ({s}): click Watch again", .{@errorName(err)});
+        };
         try Io.Dir.cwd().deleteFile(ctx.io, part);
+        try Io.Dir.cwd().rename(unpacked, Io.Dir.cwd(), dest, ctx.io);
     } else try Io.Dir.cwd().rename(part, Io.Dir.cwd(), dest, ctx.io);
 
     return dest;
